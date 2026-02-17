@@ -62,6 +62,29 @@
 
 ### 2.2 接口清单
 
+#### **2.2.0 同步语音对话（MVP）**
+
+| 项目 | 内容 |
+|------|------|
+| **接口路径** | `POST /api/v1/chat/MVP` |
+| **功能说明** | 用户上传语音文件，后端同步执行 ASR + LLM + TTS，并直接返回 TTS 生成的音频流（用于快速体验核心对话能力的 MVP 接口） |
+
+**请求参数**：
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `audio_file` | file | ✓ | 用户语音文件（WAV / MP3，最大 10MB） |
+| `audio_type` | string | ✓ | 音频格式：`wav` / `mp3` |
+| `conversation_type` | string | ✓ | 对话类型：`free_talk` / `question_answer` |
+| `difficulty_level` | string | ✗ | 难度等级：`beginner` / `intermediate` / `advanced` |
+
+**响应说明**：
+
+- 成功：`HTTP 200`，`Content-Type: audio/mpeg`，响应体为 TTS 生成的音频二进制流，不使用通用 JSON 包装。
+- 失败：返回通用 JSON 错误结构（`code` ≠ 200，`message` 描述错误原因）。
+
+> 说明：该接口用于“先跑通一条完整链路（Fun-ASR → Qwen → CosyVoice）”的 MVP，后续可逐步替换为异步任务型接口（见 2.2.1+）。
+
 #### **2.2.1 提交语音对话请求**
 
 | 项目 | 内容 |
@@ -381,6 +404,28 @@
 ---
 
 ### 3.2 接口清单
+
+#### **3.2.0 同步发音评测（MVP）**
+
+| 项目 | 内容 |
+|------|------|
+| **接口路径** | `POST /api/v1/evaluate/MVP` |
+| **功能说明** | 用户上传朗读语音，后端同步调用讯飞语音评测 + LLM 生成反馈 + TTS 合成反馈语音，并直接返回反馈语音的音频流（分级反馈 MVP 接口） |
+
+**请求参数**：
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `audio_file` | file | ✓ | 用户朗读语音（WAV / MP3，最大 10MB） |
+| `audio_type` | string | ✓ | 音频格式：`wav` / `mp3` |
+| `text_id` | string | ✓ | 朗读文本 ID（对应数据库中的句子/段落） |
+
+**响应说明**：
+
+- 成功：`HTTP 200`，`Content-Type: audio/mpeg`，响应体为反馈语音的音频二进制流，其中内容已根据评测分数自动生成 S/A/B/C 分级反馈文案。
+- 失败：返回通用 JSON 错误结构（`code` ≠ 200，`message` 描述错误原因）。
+
+> 说明：该接口聚焦“听得见的分级反馈体验”，后续可引入异步评测与结果查询接口（见 3.2.1+）。
 
 #### **3.2.1 提交发音评测请求**
 
@@ -746,6 +791,46 @@
 
 ### 4.2 接口清单
 
+#### **4.2.0 同步生成学习报告（MVP）**
+
+| 项目 | 内容 |
+|------|------|
+| **接口路径** | `POST /api/v1/report/MVP` |
+| **功能说明** | 基于当前用户的历史对话与发音评测数据，同步生成一份学习报告，并直接返回报告摘要和完整内容（报告生成 MVP 接口） |
+
+**请求参数**：
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `report_type` | string | ✓ | 报告类型：`weekly` / `monthly` / `custom` |
+| `start_date` | string | ✗ | 开始日期（YYYY-MM-DD，若不填则自动推算本期起始） |
+| `end_date` | string | ✗ | 结束日期（YYYY-MM-DD，若不填则为今天） |
+
+**返回结构示例**：
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "report_id": "report_20240115_abc123",
+    "report_type": "weekly",
+    "period_start_date": "2024-01-08",
+    "period_end_date": "2024-01-14",
+    "total_conversations": 12,
+    "total_evaluations": 8,
+    "average_evaluation_score": 78.5,
+    "improvement_rate": 12.3,
+    "strengths": ["流利度提升明显"],
+    "weaknesses": ["准确度仍需加强"],
+    "recommendations": "本周可以多练习包含 /th/ 音的句子。",
+    "report_content": "完整的报告内容（Markdown 或纯文本）"
+  }
+}
+```
+
+> 说明：该接口直接完成“查询数据 → 统计分析 → LLM 生成报告”的同步流程，用于快速验证学习报告功能；复杂场景可使用 4.2.1 的异步生成方式。
+
 #### **4.2.1 生成学习报告**
 
 | 项目 | 内容 |
@@ -1066,32 +1151,8 @@
 
 ---
 
-#### **4.2.6 导出报告（PDF 格式）**
 
-| 项目 | 内容 |
-|------|------|
-| **接口路径** | `GET /api/v1/report/{report_id}/export` |
-| **功能说明** | 将报告导出为 PDF 文件 |
-
-**路径参数**：
-
-| 参数名 | 类型 | 说明 |
-|--------|------|------|
-| `report_id` | string | 报告 ID |
-
-**查询参数**：
-
-| 参数名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `format` | string | ✗ | 导出格式：`pdf`（默认）/ `json` |
-
-**返回说明**：
-- Content-Type: `application/pdf`（若选择 PDF）
-- 返回文件流，客户端自动下载为 `report_{report_id}.pdf`
-
----
-
-#### **4.2.7 获取学习统计面板**
+#### **4.2.6 获取学习统计面板**
 
 | 项目 | 内容 |
 |------|------|
@@ -1501,6 +1562,7 @@
 
 | 编号 | 接口路径 | 方法 | 功能说明 |
 |------|---------|------|---------|
+| C-0 | `/api/v1/chat/MVP` | POST | 同步语音对话（ASR + LLM + TTS，返回音频流） |
 | C-1 | `/api/v1/chat/submit` | POST | 提交语音对话请求 |
 | C-2 | `/api/v1/chat/result/{task_id}` | GET | 查询语音对话处理结果 |
 | C-3 | `/api/v1/chat/history/{session_id}` | GET | 获取对话历史 |
@@ -1514,6 +1576,7 @@
 
 | 编号 | 接口路径 | 方法 | 功能说明 |
 |------|---------|------|---------|
+| E-0 | `/api/v1/evaluate/MVP` | POST | 同步发音评测（评测 + 分级反馈 + TTS，返回音频流） |
 | E-1 | `/api/v1/evaluate/submit` | POST | 提交发音评测请求 |
 | E-2 | `/api/v1/evaluate/result/{eval_id}` | GET | 查询发音评测结果 |
 | E-3 | `/api/v1/evaluate/history` | GET | 获取评测历史 |
@@ -1527,13 +1590,13 @@
 
 | 编号 | 接口路径 | 方法 | 功能说明 |
 |------|---------|------|---------|
+| R-0 | `/api/v1/report/MVP` | POST | 同步生成学习报告（统计 + LLM，直接返回报告内容） |
 | R-1 | `/api/v1/report/generate` | POST | 生成学习报告 |
 | R-2 | `/api/v1/report/{report_id}/status` | GET | 查询报告生成进度 |
 | R-3 | `/api/v1/report/{report_id}` | GET | 获取报告详情 |
 | R-4 | `/api/v1/report/list` | GET | 获取报告列表 |
 | R-5 | `/api/v1/report/{report_id}` | DELETE | 删除报告 |
-| R-6 | `/api/v1/report/{report_id}/export` | GET | 导出报告（PDF） |
-| R-7 | `/api/v1/report/dashboard` | GET | 获取学习统计面板 |
+| R-6 | `/api/v1/report/dashboard` | GET | 获取学习统计面板 |
 
 ---
 
@@ -1558,7 +1621,7 @@
 
 ✅ **AI 语音对话模块** - 6 个接口
 ✅ **AI 发音纠正模块** - 6 个接口
-✅ **智能学习报告模块** - 7 个接口
+✅ **智能学习报告模块** - 6 个接口
 ✅ **用户认证与管理** - 4 个接口
 ✅ **系统与资源** - 2 个接口
 
@@ -1570,5 +1633,3 @@
 - 完全贴合真实业务场景
 
 ---
-
-**API 设计文档已完成，可直接用于毕业论文的「系统接口设计」章节！** 🎉
