@@ -2,9 +2,6 @@
 package service
 
 import (
-	"context"
-
-	"pronunciation-correction-system/internal/model"
 	"pronunciation-correction-system/internal/service/evaluation"
 	"pronunciation-correction-system/internal/service/feedback"
 	"pronunciation-correction-system/internal/service/user"
@@ -17,7 +14,7 @@ type EvaluationService interface {
 
 // FeedbackService 反馈服务接口
 type FeedbackService interface {
-	//Generate(ctx context.Context, eval *model.Evaluation) (*model.Feedback, error)
+	//Generate(ctx context.Context, eval *model.PronunciationEvaluation) (*model.Feedback, error)
 }
 
 // UserService 用户服务接口
@@ -27,32 +24,32 @@ type UserService interface {
 
 // AudioService 音频服务接口
 type AudioService interface {
-	Process(ctx context.Context, data []byte, format string) ([]byte, error)
-	Upload(ctx context.Context, data []byte, filename string) (string, error)
+	//Process(ctx context.Context, data []byte, format string) ([]byte, error)
+	//Upload(ctx context.Context, data []byte, filename string) (string, error)
 }
 
 // ReportService 报告服务接口
 type ReportService interface {
-	//GenerateWeeklyReport(ctx context.Context, userID string) (*model.Report, error)
-	//GenerateMonthlyReport(ctx context.Context, userID string, year, month int) (*model.Report, error)
-	//GetReport(ctx context.Context, reportID string) (*model.Report, error)
+	//GenerateWeeklyReport(ctx context.Context, userID string) (*model.LearningReport, error)
+	//GenerateMonthlyReport(ctx context.Context, userID string, year, month int) (*model.LearningReport, error)
+	//GetReport(ctx context.Context, reportID string) (*model.LearningReport, error)
 }
 
-// ChatService 对话服务接口
-type ChatService interface {
-	CreateSession(ctx context.Context, userID string, scenario string) (*model.ChatSession, error)
-	SendMessage(ctx context.Context, sessionID string, message string) (*model.ChatMessage, error)
-	GetHistory(ctx context.Context, sessionID string) ([]*model.ChatMessage, error)
+// ConversationService 对话服务接口
+type ConversationService interface {
+	//CreateConversation(ctx context.Context, userID string, topic string) (*model.VoiceConversation, error)
+	//SendMessage(ctx context.Context, conversationID string, message string) (*model.ConversationMessage, error)
+	//GetHistory(ctx context.Context, conversationID string) ([]*model.ConversationMessage, error)
 }
 
 // Services 服务集合
 type Services struct {
-	Evaluation EvaluationService
-	Feedback   FeedbackService
-	User       UserService
-	Audio      AudioService
-	Report     ReportService
-	Chat       ChatService
+	Evaluation   EvaluationService
+	Feedback     FeedbackService
+	User         UserService
+	Audio        AudioService
+	Report       ReportService
+	Conversation ConversationService
 }
 
 // FeedbackServiceInterface feedback 服务接口定义

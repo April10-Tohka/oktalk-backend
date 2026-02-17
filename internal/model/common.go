@@ -110,36 +110,35 @@ func NewPaginatedResponse(items interface{}, total int64, page, pageSize int) *A
 	}
 }
 
-// 用户状态常量
+// === 反馈级别常量 ===
 const (
-	UserStatusActive    = "active"
-	UserStatusSuspended = "suspended"
-	UserStatusDeleted   = "deleted"
+	FeedbackLevelS = "S" // 90-100: 纯鼓励
+	FeedbackLevelA = "A" // 70-89:  鼓励+诊断
+	FeedbackLevelB = "B" // 50-69:  诊断+示范
+	FeedbackLevelC = "C" // 0-49:   完整示范
 )
 
-// 反馈级别常量
-const (
-	FeedbackLevelS = "S"
-	FeedbackLevelA = "A"
-	FeedbackLevelB = "B"
-	FeedbackLevelC = "C"
-)
-
-// 难度级别常量
+// === 难度级别常量 ===
 const (
 	DifficultyBeginner     = "beginner"
 	DifficultyIntermediate = "intermediate"
 	DifficultyAdvanced     = "advanced"
 )
 
-// 对话状态常量
+// === 对话状态常量 ===
 const (
 	ConversationStatusActive    = "active"
 	ConversationStatusCompleted = "completed"
 	ConversationStatusPaused    = "paused"
 )
 
-// 评测状态常量
+// === 对话类型常量 ===
+const (
+	ConversationTypeFreeTalk       = "free_talk"
+	ConversationTypeQuestionAnswer = "question_answer"
+)
+
+// === 评测状态常量 ===
 const (
 	EvaluationStatusPending    = "pending"
 	EvaluationStatusProcessing = "processing"
@@ -147,13 +146,13 @@ const (
 	EvaluationStatusFailed     = "failed"
 )
 
-// 发送者类型常量
+// === 发送者类型常量 ===
 const (
 	SenderTypeUser = "user"
 	SenderTypeAI   = "ai"
 )
 
-// 报告类型常量
+// === 报告类型常量 ===
 const (
 	ReportTypeWeekly  = "weekly"
 	ReportTypeMonthly = "monthly"

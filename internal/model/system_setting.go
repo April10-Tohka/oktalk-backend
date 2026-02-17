@@ -6,7 +6,8 @@ import (
 )
 
 // SystemSetting 系统配置表
-// 存储系统级配置（评分阈值、反馈模板等）
+// 存储系统级配置参数（评分阈值、反馈模板等）
+// 对应数据库表: system_settings
 type SystemSetting struct {
 	// ID 主键 ID (UUID)
 	ID string `gorm:"primaryKey;type:varchar(36)" json:"id" validate:"required,uuid"`
@@ -33,6 +34,7 @@ func (SystemSetting) TableName() string {
 
 // 系统配置键的常量定义
 const (
+	// === 反馈级别阈值 ===
 	// ConfigFeedbackSLevelMinScore S 级反馈最低分数
 	ConfigFeedbackSLevelMinScore = "feedback_s_level_min_score"
 	// ConfigFeedbackALevelMinScore A 级反馈最低分数
@@ -41,13 +43,24 @@ const (
 	ConfigFeedbackBLevelMinScore = "feedback_b_level_min_score"
 	// ConfigFeedbackCLevelMinScore C 级反馈最低分数
 	ConfigFeedbackCLevelMinScore = "feedback_c_level_min_score"
-	// ConfigForbiddenWords 禁用词列表
+
+	// === 系统参数 ===
+	// ConfigForbiddenWords 禁用词列表（反馈生成时过滤）
 	ConfigForbiddenWords = "forbidden_words"
 	// ConfigReportGenerationSchedule 报告生成时间表 (cron)
 	ConfigReportGenerationSchedule = "report_generation_schedule"
+	// ConfigMaxAudioDurationSeconds 最大录音时长（秒）
+	ConfigMaxAudioDurationSeconds = "max_audio_duration_seconds"
+	// ConfigMaxConversationMessages 单次对话最大消息数
+	ConfigMaxConversationMessages = "max_conversation_messages"
+	// ConfigDefaultTTSVoice 默认 TTS 音色
+	ConfigDefaultTTSVoice = "default_tts_voice"
+	// ConfigDefaultLLMModel 默认 LLM 模型
+	ConfigDefaultLLMModel = "default_llm_model"
 )
 
 // DefaultSystemSettings 默认系统配置
+// 系统初始化时自动插入（仅插入不存在的配置）
 var DefaultSystemSettings = []SystemSetting{
 	{
 		ID:          "set_001",
@@ -86,7 +99,7 @@ var DefaultSystemSettings = []SystemSetting{
 		ConfigKey:   ConfigForbiddenWords,
 		ConfigValue: `["bad","wrong","terrible","fail","mistake","error","poor","awful"]`,
 		ConfigType:  "json",
-		Description: strPtr("禁用词列表"),
+		Description: strPtr("禁用词列表（反馈生成时过滤）"),
 		IsEditable:  true,
 	},
 	{
@@ -94,7 +107,39 @@ var DefaultSystemSettings = []SystemSetting{
 		ConfigKey:   ConfigReportGenerationSchedule,
 		ConfigValue: "0 0 * * 1",
 		ConfigType:  "string",
-		Description: strPtr("报告生成时间表(cron)"),
+		Description: strPtr("报告生成时间表(cron表达式，每周一)"),
+		IsEditable:  true,
+	},
+	{
+		ID:          "set_007",
+		ConfigKey:   ConfigMaxAudioDurationSeconds,
+		ConfigValue: "60",
+		ConfigType:  "int",
+		Description: strPtr("最大录音时长（秒）"),
+		IsEditable:  true,
+	},
+	{
+		ID:          "set_008",
+		ConfigKey:   ConfigMaxConversationMessages,
+		ConfigValue: "50",
+		ConfigType:  "int",
+		Description: strPtr("单次对话最大消息数"),
+		IsEditable:  true,
+	},
+	{
+		ID:          "set_009",
+		ConfigKey:   ConfigDefaultTTSVoice,
+		ConfigValue: "longanyang",
+		ConfigType:  "string",
+		Description: strPtr("默认TTS音色"),
+		IsEditable:  true,
+	},
+	{
+		ID:          "set_010",
+		ConfigKey:   ConfigDefaultLLMModel,
+		ConfigValue: "qwen-plus",
+		ConfigType:  "string",
+		Description: strPtr("默认LLM模型"),
 		IsEditable:  true,
 	},
 }

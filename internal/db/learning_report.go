@@ -31,7 +31,7 @@ type LearningReportRepository interface {
 	CountByType(ctx context.Context, reportType string) (int64, error)
 
 	// 预加载方法
-	GetWithStatistics(ctx context.Context, id string) (*model.LearningReport, error)
+	GetWithUser(ctx context.Context, id string) (*model.LearningReport, error)
 
 	// 事务支持
 	WithTx(tx *gorm.DB) LearningReportRepository
@@ -222,17 +222,15 @@ func (r *learningReportRepository) CountByType(ctx context.Context, reportType s
 	return count, nil
 }
 
-// GetWithStatistics 获取学习报告及其统计明细
-func (r *learningReportRepository) GetWithStatistics(ctx context.Context, id string) (*model.LearningReport, error) {
+// GetWithUser 获取学习报告及其关联用户
+func (r *learningReportRepository) GetWithUser(ctx context.Context, id string) (*model.LearningReport, error) {
 	var report model.LearningReport
 	err := r.db.WithContext(ctx).
-		Preload("Statistics", func(db *gorm.DB) *gorm.DB {
-			return db.Order("stat_date ASC")
-		}).
+		Preload("User").
 		Where("id = ?", id).
 		First(&report).Error
 	if err != nil {
-		return nil, WrapDBError(err, "get learning report with statistics")
+		return nil, WrapDBError(err, "get learning report with user")
 	}
 	return &report, nil
 }

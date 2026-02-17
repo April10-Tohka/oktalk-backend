@@ -38,8 +38,7 @@ type PronunciationEvaluationRepository interface {
 	UpdateScores(ctx context.Context, id string, overall, accuracy, fluency, integrity int) error
 
 	// 预加载方法
-	GetWithDetails(ctx context.Context, id string) (*model.PronunciationEvaluation, error)
-	GetWithFeedbackRecord(ctx context.Context, id string) (*model.PronunciationEvaluation, error)
+	GetWithUser(ctx context.Context, id string) (*model.PronunciationEvaluation, error)
 
 	// 事务支持
 	WithTx(tx *gorm.DB) PronunciationEvaluationRepository
@@ -333,30 +332,15 @@ func (r *pronunciationEvaluationRepository) UpdateScores(ctx context.Context, id
 	return WrapDBError(err, "update pronunciation evaluation scores")
 }
 
-// GetWithDetails 获取评测记录及其详细数据
-func (r *pronunciationEvaluationRepository) GetWithDetails(ctx context.Context, id string) (*model.PronunciationEvaluation, error) {
+// GetWithUser 获取评测记录及其关联用户
+func (r *pronunciationEvaluationRepository) GetWithUser(ctx context.Context, id string) (*model.PronunciationEvaluation, error) {
 	var evaluation model.PronunciationEvaluation
 	err := r.db.WithContext(ctx).
-		Preload("EvaluationDetails", func(db *gorm.DB) *gorm.DB {
-			return db.Order("word_index ASC")
-		}).
+		Preload("User").
 		Where("id = ?", id).
 		First(&evaluation).Error
 	if err != nil {
-		return nil, WrapDBError(err, "get pronunciation evaluation with details")
-	}
-	return &evaluation, nil
-}
-
-// GetWithFeedbackRecord 获取评测记录及其反馈记录
-func (r *pronunciationEvaluationRepository) GetWithFeedbackRecord(ctx context.Context, id string) (*model.PronunciationEvaluation, error) {
-	var evaluation model.PronunciationEvaluation
-	err := r.db.WithContext(ctx).
-		Preload("FeedbackRecord").
-		Where("id = ?", id).
-		First(&evaluation).Error
-	if err != nil {
-		return nil, WrapDBError(err, "get pronunciation evaluation with feedback record")
+		return nil, WrapDBError(err, "get pronunciation evaluation with user")
 	}
 	return &evaluation, nil
 }

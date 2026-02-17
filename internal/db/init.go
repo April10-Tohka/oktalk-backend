@@ -21,10 +21,7 @@ type Repositories struct {
 	VoiceConversation       VoiceConversationRepository
 	ConversationMessage     ConversationMessageRepository
 	PronunciationEvaluation PronunciationEvaluationRepository
-	EvaluationDetail        EvaluationDetailRepository
-	FeedbackRecord          FeedbackRecordRepository
 	LearningReport          LearningReportRepository
-	ReportStatistic         ReportStatisticRepository
 	SystemSetting           SystemSettingRepository
 }
 
@@ -36,10 +33,7 @@ func NewRepositories(db *gorm.DB) *Repositories {
 		VoiceConversation:       NewVoiceConversationRepository(db),
 		ConversationMessage:     NewConversationMessageRepository(db),
 		PronunciationEvaluation: NewPronunciationEvaluationRepository(db),
-		EvaluationDetail:        NewEvaluationDetailRepository(db),
-		FeedbackRecord:          NewFeedbackRecordRepository(db),
 		LearningReport:          NewLearningReportRepository(db),
-		ReportStatistic:         NewReportStatisticRepository(db),
 		SystemSetting:           NewSystemSettingRepository(db),
 	}
 }
@@ -52,10 +46,7 @@ func (r *Repositories) WithTx(tx *gorm.DB) *Repositories {
 		VoiceConversation:       r.VoiceConversation.WithTx(tx),
 		ConversationMessage:     r.ConversationMessage.WithTx(tx),
 		PronunciationEvaluation: r.PronunciationEvaluation.WithTx(tx),
-		EvaluationDetail:        r.EvaluationDetail.WithTx(tx),
-		FeedbackRecord:          r.FeedbackRecord.WithTx(tx),
 		LearningReport:          r.LearningReport.WithTx(tx),
-		ReportStatistic:         r.ReportStatistic.WithTx(tx),
 		SystemSetting:           r.SystemSetting.WithTx(tx),
 	}
 }
@@ -96,7 +87,7 @@ func Init(cfg *config.Config) (*gorm.DB, error) {
 }
 
 // Migrate 执行数据库迁移
-// 自动创建或更新所有表结构
+// 自动创建或更新所有表结构（v2.0: 7 张表）
 func Migrate(db *gorm.DB) error {
 	return db.AutoMigrate(
 		// 用户相关
@@ -105,13 +96,10 @@ func Migrate(db *gorm.DB) error {
 		// 对话相关
 		&model.VoiceConversation{},
 		&model.ConversationMessage{},
-		// 评测相关
+		// 评测相关（已合并 EvaluationDetail 和 FeedbackRecord）
 		&model.PronunciationEvaluation{},
-		&model.EvaluationDetail{},
-		&model.FeedbackRecord{},
-		// 报告相关
+		// 报告相关（已合并 ReportStatistic）
 		&model.LearningReport{},
-		&model.ReportStatistic{},
 		// 系统配置
 		&model.SystemSetting{},
 	)
