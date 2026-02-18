@@ -7,18 +7,14 @@ import (
 	"pronunciation-correction-system/internal/handler"
 )
 
-// setupAuthRoutes 注册认证路由
-// POST /api/v1/auth/*
-func setupAuthRoutes(rg *gin.RouterGroup, userHandler *handler.UserHandler) {
+// setupAuthRoutes 注册认证路由（无需登录）
+// A-1 ~ A-4
+func setupAuthRoutes(rg *gin.RouterGroup, h *handler.AuthHandler) {
 	auth := rg.Group("/auth")
 	{
-		// 用户注册
-		auth.POST("/register", userHandler.Register)
-
-		// 用户登录
-		auth.POST("/login", userHandler.Login)
-
-		// 用户登出
-		auth.POST("/logout", userHandler.Logout)
+		auth.POST("/login", h.Login)          // A-1
+		auth.POST("/register", h.Register)    // A-2
+		auth.POST("/logout", h.Logout)        // A-3
+		auth.POST("/refresh", h.RefreshToken) // A-4
 	}
 }

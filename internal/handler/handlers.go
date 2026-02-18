@@ -4,8 +4,10 @@ package handler
 
 // Handlers 所有 HTTP Handler 的聚合
 type Handlers struct {
-	Health     *HealthHandler
-	User       *UserHandler
-	Evaluation *EvaluationHandler
-	Feedback   *FeedbackHandler
+	Auth     *AuthHandler
+	User     *UserHandler
+	Chat     *ChatHandler
+	Evaluate *EvaluateHandler
+	Report   *ReportHandler
+	System   *SystemHandler
 }

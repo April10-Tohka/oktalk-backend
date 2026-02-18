@@ -21,9 +21,7 @@ import (
 	infraLLM "pronunciation-correction-system/internal/infrastructure/llm/qwen"
 	infraOSS "pronunciation-correction-system/internal/infrastructure/oss/aliyun"
 	infraTTS "pronunciation-correction-system/internal/infrastructure/tts/aliyun"
-	"pronunciation-correction-system/internal/service/evaluation"
-	"pronunciation-correction-system/internal/service/feedback"
-	"pronunciation-correction-system/internal/service/user"
+	"pronunciation-correction-system/internal/service"
 )
 
 // App 应用程序实例，持有所有依赖
@@ -46,9 +44,11 @@ type App struct {
 	OSSProvider        domain.OSSProvider
 
 	// 服务层
-	UserService       user.Service
-	EvaluationService evaluation.Service
-	FeedbackGenerator *feedback.Generator
+	AuthService     service.AuthService
+	UserService     service.UserService
+	ChatService     service.ChatService
+	EvaluateService service.EvaluateService
+	ReportService   service.ReportService
 
 	// Handler 层
 	Handlers *handler.Handlers
@@ -131,9 +131,6 @@ func (a *App) initInfrastructure() {
 	switch a.Config.LLM.ActiveProvider {
 	case "qwen":
 		a.LLMProvider = infraLLM.NewQwenAdapter(a.Config.LLM.Qwen)
-	// TODO: case "gemini": a.LLMProvider = infraGemini.NewGeminiAdapter(a.Config.LLM.Gemini)
-	// TODO: case "deepseek": a.LLMProvider = infraDeepSeek.NewDeepSeekAdapter(a.Config.LLM.DeepSeek)
-	// TODO: case "doubao": a.LLMProvider = infraDoubao.NewDoubaoAdapter(a.Config.LLM.Doubao)
 	default:
 		a.LLMProvider = infraLLM.NewQwenAdapter(a.Config.LLM.Qwen)
 	}
@@ -171,12 +168,14 @@ func (a *App) initRepositories() {
 	log.Println("[App] Repositories initialized")
 }
 
-// initServices 初始化业务服务（注入 domain 接口）
+// initServices 初始化业务服务
+// TODO: Step2 注入真实依赖（Repos, Provider 等）
 func (a *App) initServices() {
-	// 将 domain 接口注入给 Service 层
-	a.UserService = user.NewService()
-	a.EvaluationService = evaluation.NewService(a.EvaluationProvider)
-	a.FeedbackGenerator = feedback.NewGenerator(a.LLMProvider)
+	a.AuthService = service.NewAuthService(nil)
+	a.UserService = service.NewUserService(nil)
+	a.ChatService = service.NewChatService(nil)
+	a.EvaluateService = service.NewEvaluateService(nil)
+	a.ReportService = service.NewReportService(nil)
 
 	log.Println("[App] Services initialized")
 }
@@ -184,10 +183,12 @@ func (a *App) initServices() {
 // initHandlers 初始化 HTTP Handler
 func (a *App) initHandlers() {
 	a.Handlers = &handler.Handlers{
-		Health:     handler.NewHealthHandler(),
-		User:       handler.NewUserHandler(a.UserService),
-		Evaluation: handler.NewEvaluationHandler(a.EvaluationService),
-		Feedback:   handler.NewFeedbackHandler(nil), // feedback.Service 接口暂无实现方法
+		Auth:     handler.NewAuthHandler(a.AuthService),
+		User:     handler.NewUserHandler(a.UserService),
+		Chat:     handler.NewChatHandler(a.ChatService),
+		Evaluate: handler.NewEvaluateHandler(a.EvaluateService),
+		Report:   handler.NewReportHandler(a.ReportService),
+		System:   handler.NewSystemHandler(),
 	}
 	log.Println("[App] Handlers initialized")
 }

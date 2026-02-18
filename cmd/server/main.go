@@ -24,14 +24,14 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// 初始化应用（依赖注入）
+	// 初始化应用（依赖注入：DB → Repository → Service → Handler）
 	application, err := app.New(cfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize application: %v", err)
 	}
 	defer application.Close()
 
-	// 初始化路由（传入 Handlers）
+	// 初始化路由（注入真实 Handler）
 	r := router.Setup(cfg, application.Handlers)
 
 	// 创建 HTTP 服务器

@@ -1,59 +1,41 @@
-// Package router 提供资源相关路由
+// Package router 提供健康检查、系统状态、学习资源路由
 package router
 
 import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+
+	"pronunciation-correction-system/internal/handler"
 )
 
-// setupResourceRoutes 注册资源路由
-// GET /api/v1/resources/*
-func setupResourceRoutes(rg *gin.RouterGroup) {
-	// TODO: 注入 ResourceHandler 依赖
+// setupHealthRoutes 注册健康检查路由（无需认证）
+func setupHealthRoutes(r *gin.Engine) {
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+	r.GET("/ready", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ready"})
+	})
+	r.GET("/live", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "alive"})
+	})
+}
 
-	resources := rg.Group("/resources")
+// setupSystemRoutes 注册系统路由（无需认证）
+// S-1
+func setupSystemRoutes(rg *gin.RouterGroup, h *handler.SystemHandler) {
+	system := rg.Group("/system")
 	{
-		// 获取文本资源列表
-		resources.GET("/texts", func(c *gin.Context) {
-			// TODO: 实现获取文本资源
-			c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
-		})
-
-		// 获取单个文本详情
-		resources.GET("/texts/:id", func(c *gin.Context) {
-			// TODO: 实现获取文本详情
-			c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
-		})
-
-		// 获取场景列表
-		resources.GET("/scenarios", func(c *gin.Context) {
-			// TODO: 实现获取场景列表
-			c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
-		})
-
-		// 获取难度等级
-		resources.GET("/levels", func(c *gin.Context) {
-			// TODO: 实现获取难度等级
-			c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
-		})
+		system.GET("/status", h.GetSystemStatus) // S-1
 	}
 }
 
-// setupHealthRoutes 注册健康检查路由
-func setupHealthRoutes(r *gin.Engine) {
-	health := r.Group("")
+// setupResourceRoutes 注册学习资源路由（需认证）
+// S-2
+func setupResourceRoutes(rg *gin.RouterGroup, h *handler.SystemHandler) {
+	resources := rg.Group("/resources")
 	{
-		health.GET("/health", func(c *gin.Context) {
-			c.JSON(http.StatusOK, gin.H{"status": "ok"})
-		})
-
-		health.GET("/ready", func(c *gin.Context) {
-			c.JSON(http.StatusOK, gin.H{"status": "ready"})
-		})
-
-		health.GET("/live", func(c *gin.Context) {
-			c.JSON(http.StatusOK, gin.H{"status": "alive"})
-		})
+		resources.GET("/texts", h.GetLearningTexts) // S-2
 	}
 }

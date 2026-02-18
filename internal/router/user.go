@@ -7,18 +7,12 @@ import (
 	"pronunciation-correction-system/internal/handler"
 )
 
-// setupUserRoutes 注册用户路由
-// GET/PUT /api/v1/user/*
-func setupUserRoutes(rg *gin.RouterGroup, userHandler *handler.UserHandler) {
+// setupUserRoutes 注册用户路由（需认证）
+// U-1 ~ U-2
+func setupUserRoutes(rg *gin.RouterGroup, h *handler.UserHandler) {
 	user := rg.Group("/user")
 	{
-		// 获取用户信息
-		user.GET("/profile", userHandler.GetProfile)
-
-		// 更新用户信息
-		user.PUT("/profile", userHandler.UpdateProfile)
-
-		// 获取学习统计
-		user.GET("/stats", userHandler.GetLearningStats)
+		user.GET("/profile", h.GetProfile)    // U-1
+		user.PUT("/profile", h.UpdateProfile) // U-2
 	}
 }

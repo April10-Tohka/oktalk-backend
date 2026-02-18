@@ -1,41 +1,26 @@
-// Package router 提供报告相关路由
+// Package router 提供智能学习报告路由
 package router
 
 import (
-	"net/http"
-
 	"github.com/gin-gonic/gin"
+
+	"pronunciation-correction-system/internal/handler"
 )
 
-// setupReportRoutes 注册报告路由
-// POST/GET /api/v1/report/*
-func setupReportRoutes(rg *gin.RouterGroup) {
-	// TODO: 注入 ReportHandler 依赖
-
+// setupReportRoutes 注册智能学习报告路由（需认证）
+// R-0 ~ R-6
+func setupReportRoutes(rg *gin.RouterGroup, h *handler.ReportHandler) {
 	report := rg.Group("/report")
 	{
-		// 生成学习报告
-		report.POST("/generate", func(c *gin.Context) {
-			// TODO: 实现生成报告
-			c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
-		})
+		// ── 静态路径（优先匹配）──
+		report.POST("/MVP", h.ReportMVP)              // R-0
+		report.POST("/generate", h.GenerateReport)    // R-1
+		report.GET("/list", h.GetReportList)           // R-4
+		report.GET("/dashboard", h.GetDashboard)       // R-6
 
-		// 获取报告详情
-		report.GET("/:id", func(c *gin.Context) {
-			// TODO: 实现获取报告
-			c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
-		})
-
-		// 获取报告列表
-		report.GET("/list", func(c *gin.Context) {
-			// TODO: 实现获取报告列表
-			c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
-		})
-
-		// 获取最新周报
-		report.GET("/weekly/latest", func(c *gin.Context) {
-			// TODO: 实现获取最新周报
-			c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
-		})
+		// ── 参数路径 ──
+		report.GET("/:report_id/status", h.GetReportStatus) // R-2
+		report.GET("/:report_id", h.GetReport)              // R-3
+		report.DELETE("/:report_id", h.DeleteReport)        // R-5
 	}
 }

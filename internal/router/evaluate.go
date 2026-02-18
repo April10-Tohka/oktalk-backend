@@ -1,4 +1,4 @@
-// Package router 提供评测相关路由
+// Package router 提供 AI 发音纠正路由
 package router
 
 import (
@@ -7,24 +7,20 @@ import (
 	"pronunciation-correction-system/internal/handler"
 )
 
-// setupEvaluateRoutes 注册评测路由
-// POST/GET /api/v1/evaluate/*
-func setupEvaluateRoutes(rg *gin.RouterGroup, evaluationHandler *handler.EvaluationHandler, feedbackHandler *handler.FeedbackHandler) {
-	evaluate := rg.Group("/evaluate")
+// setupEvaluateRoutes 注册 AI 发音纠正路由（需认证）
+// E-0 ~ E-6
+func setupEvaluateRoutes(rg *gin.RouterGroup, h *handler.EvaluateHandler) {
+	eval := rg.Group("/evaluate")
 	{
-		// 提交发音评测
-		evaluate.POST("", evaluationHandler.SubmitEvaluation)
+		// ── 静态路径（优先匹配）──
+		eval.POST("/MVP", h.EvaluateMVP)                          // E-0
+		eval.POST("/submit", h.SubmitEvaluation)                  // E-1
+		eval.GET("/history", h.GetEvaluationHistory)              // E-3
+		eval.GET("/reference-audio/:text_id", h.GetReferenceAudio) // E-6
 
-		// 获取评测结果
-		evaluate.GET("/:id", evaluationHandler.GetEvaluationResult)
-
-		// 获取评测历史
-		evaluate.GET("/history", evaluationHandler.GetEvaluationHistory)
-
-		// 获取评测反馈
-		evaluate.GET("/:id/feedback", feedbackHandler.GetFeedback)
-
-		// 获取示范音频
-		evaluate.GET("/:id/demo-audio", feedbackHandler.GetDemoAudio)
+		// ── 参数路径 ──
+		eval.GET("/result/:eval_id", h.GetEvaluationResult)       // E-2
+		eval.GET("/:eval_id/detail", h.GetEvaluationDetail)       // E-4
+		eval.DELETE("/:eval_id", h.DeleteEvaluation)              // E-5
 	}
 }

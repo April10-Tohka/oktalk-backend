@@ -1,47 +1,23 @@
-// Package router 提供对话相关路由
+// Package router 提供 AI 语音对话路由
 package router
 
 import (
-	"net/http"
-
 	"github.com/gin-gonic/gin"
+
+	"pronunciation-correction-system/internal/handler"
 )
 
-// setupChatRoutes 注册对话路由
-// POST/GET /api/v1/chat/*
-func setupChatRoutes(rg *gin.RouterGroup) {
-	// TODO: 注入 ChatHandler 依赖
-
+// setupChatRoutes 注册 AI 语音对话路由（需认证）
+// C-0 ~ C-6
+func setupChatRoutes(rg *gin.RouterGroup, h *handler.ChatHandler) {
 	chat := rg.Group("/chat")
 	{
-		// 创建新对话
-		chat.POST("/session", func(c *gin.Context) {
-			// TODO: 实现创建对话
-			c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
-		})
-
-		// 发送消息
-		chat.POST("/message", func(c *gin.Context) {
-			// TODO: 实现发送消息
-			c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
-		})
-
-		// 获取对话历史
-		chat.GET("/session/:id", func(c *gin.Context) {
-			// TODO: 实现获取对话历史
-			c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
-		})
-
-		// 获取所有对话列表
-		chat.GET("/sessions", func(c *gin.Context) {
-			// TODO: 实现获取对话列表
-			c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
-		})
-
-		// 删除对话
-		chat.DELETE("/session/:id", func(c *gin.Context) {
-			// TODO: 实现删除对话
-			c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
-		})
+		chat.POST("/MVP", h.ChatMVP)                          // C-0
+		chat.POST("/submit", h.SubmitChat)                    // C-1
+		chat.GET("/result/:task_id", h.GetChatResult)         // C-2
+		chat.GET("/history/:session_id", h.GetChatHistory)    // C-3
+		chat.DELETE("/session/:session_id", h.DeleteSession)  // C-4
+		chat.GET("/sessions", h.GetSessions)                  // C-5
+		chat.POST("/feedback", h.SubmitChatFeedback)          // C-6
 	}
 }

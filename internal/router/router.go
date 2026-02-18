@@ -11,6 +11,7 @@ import (
 )
 
 // Setup 初始化并返回路由引擎
+// handlers: 通过依赖注入传入的所有 Handler 实例
 func Setup(cfg *config.Config, handlers *handler.Handlers) *gin.Engine {
 	// 设置运行模式
 	gin.SetMode(cfg.Server.Mode)
@@ -18,40 +19,34 @@ func Setup(cfg *config.Config, handlers *handler.Handlers) *gin.Engine {
 	// 创建路由引擎
 	r := gin.New()
 
-	// 注册全局中间件（顺序重要）
+	// ── 全局中间件（顺序重要）──
 	r.Use(middleware.RecoveryMiddleware())     // 1. Panic 恢复（最外层）
 	r.Use(middleware.TraceMiddleware())        // 2. 生成 TraceID
 	r.Use(middleware.LoggerMiddleware())       // 3. 请求日志（依赖 TraceID）
 	r.Use(middleware.CORSMiddleware())         // 4. CORS 跨域
 	r.Use(middleware.ErrorHandlerMiddleware()) // 5. 错误处理
 
-	// 健康检查路由（无需认证）
+	// ── 公开路由（无需认证）──
 	setupHealthRoutes(r)
 
 	// API v1 路由组
 	v1 := r.Group("/api/v1")
 	{
-		// 认证路由（无需认证）
-		setupAuthRoutes(v1, handlers.User)
+		// 认证路由（无需登录）
+		setupAuthRoutes(v1, handlers.Auth)
 
-		// 需要认证的路由
-		authenticated := v1.Group("")
-		authenticated.Use(middleware.AuthMiddleware())
+		// 系统状态路由（无需登录）
+		setupSystemRoutes(v1, handlers.System)
+
+		// ── 需要认证的路由 ──
+		authed := v1.Group("")
+		authed.Use(middleware.Auth())
 		{
-			// 用户路由
-			setupUserRoutes(authenticated, handlers.User)
-
-			// 对话路由
-			setupChatRoutes(authenticated)
-
-			// 评测路由
-			setupEvaluateRoutes(authenticated, handlers.Evaluation, handlers.Feedback)
-
-			// 报告路由
-			setupReportRoutes(authenticated)
-
-			// 资源路由
-			setupResourceRoutes(authenticated)
+			setupChatRoutes(authed, handlers.Chat)         // AI 语音对话
+			setupEvaluateRoutes(authed, handlers.Evaluate) // AI 发音纠正
+			setupReportRoutes(authed, handlers.Report)     // 智能学习报告
+			setupUserRoutes(authed, handlers.User)         // 用户信息
+			setupResourceRoutes(authed, handlers.System)   // 学习资源
 		}
 	}
 
