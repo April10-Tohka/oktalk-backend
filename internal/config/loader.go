@@ -100,6 +100,14 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("jwt.expire_hours", 24)
 
 	// 日志默认配置
+	v.SetDefault("log.environment", "development")
 	v.SetDefault("log.level", "debug")
-	v.SetDefault("log.output", "stdout")
+	v.SetDefault("log.console.enabled", true)
+	v.SetDefault("log.console.colorful", true)
+	v.SetDefault("log.file.enabled", true)
+	v.SetDefault("log.file.filename", "logs/app.log")
+	v.SetDefault("log.file.max_size", 100)
+	v.SetDefault("log.file.max_backups", 30)
+	v.SetDefault("log.file.max_age", 7)
+	v.SetDefault("log.file.compress", true)
 }

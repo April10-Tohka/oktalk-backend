@@ -8,8 +8,8 @@
 //
 // 使用示例：
 //
-//	// 初始化（通常在 main.go 中调用）
-//	logger.Init("debug", "logs/app.log")
+//	// 初始化（通常在 main.go 或 app.go 中调用）
+//	logger.Init(cfg.Log)
 //	defer logger.Sync()
 //
 //	// 普通日志（不带 context）
@@ -24,9 +24,12 @@ package logger
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
+
+	"pronunciation-correction-system/internal/config"
 )
 
 // 全局日志轮转 Writer（用于 Sync/Close）
@@ -35,50 +38,49 @@ var globalRotator *RotatingWriter
 // Init 初始化全局日志系统
 //
 // 参数：
-//   - level: 日志级别 ("debug", "info", "warn", "error")
-//   - filePath: 日志文件路径（如 "logs/app.log"）；为空则仅输出到控制台
+//   - cfg: 日志配置
 //
 // 行为：
-//   - 总是输出到控制台（彩色文本格式）
-//   - 如果 filePath 非空，同时输出到文件（JSON 格式），并启用日志轮转
+//   - 控制台输出：文本格式（可选彩色）
+//   - 文件输出：JSON 格式（结构化）
+//   - 自动注入 TraceID 和 Error 调用栈
 //   - 设置为 slog 全局默认 Logger
-func Init(level, filePath string) error {
-	// 解析日志级别
-	slogLevel := parseLevel(level)
+func Init(cfg config.LogConfig) (*slog.Logger, error) {
+	slogLevel := parseLevel(cfg.Level)
 
-	// 创建控制台 Handler
-	consoleHandler := newConsoleHandler(slogLevel)
-
-	var handler slog.Handler
-
-	if filePath != "" {
-		// 创建日志轮转 Writer
-		rotator, err := NewRotatingWriter(filePath)
-		if err != nil {
-			return err
-		}
-		globalRotator = rotator
-
-		// 创建文件 Handler（JSON 格式）
-		fileHandler := newFileHandler(slogLevel, rotator)
-
-		// 多路输出：控制台 + 文件
-		handler = newMultiHandler(slogLevel, consoleHandler, fileHandler)
-	} else {
-		// 仅控制台输出
-		handler = newMultiHandler(slogLevel, consoleHandler)
+	handlers := make([]slog.Handler, 0, 2)
+	if cfg.Console.Enabled {
+		handlers = append(handlers, newConsoleHandler(slogLevel, cfg.Console.Colorful))
 	}
 
-	// 设置为全局默认 Logger
+	if cfg.File.Enabled {
+		rotator, err := NewRotatingWriter(cfg.File)
+		if err != nil {
+			return nil, err
+		}
+		globalRotator = rotator
+		handlers = append(handlers, newFileHandler(slogLevel, rotator))
+	}
+
+	if len(handlers) == 0 {
+		handlers = append(handlers, slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{
+			Level: slogLevel,
+		}))
+	}
+
+	handler := newMultiHandler(handlers...)
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
+	slog.SetLogLoggerLevel(slogLevel)
 
 	slog.Info("logger initialized",
-		"level", level,
-		"file", filePath,
+		"level", cfg.Level,
+		"console_enabled", cfg.Console.Enabled,
+		"file_enabled", cfg.File.Enabled,
+		"file", cfg.File.Filename,
 	)
 
-	return nil
+	return logger, nil
 }
 
 // Sync 同步日志缓冲并关闭文件
@@ -147,11 +149,10 @@ func parseLevel(level string) slog.Level {
 
 // initDefault 确保在包初始化时有一个基本的 Logger（即使未调用 Init）
 func init() {
-	// 设置一个默认的控制台 Logger，避免在 Init 调用前 slog 没有自定义 handler
-	handler := newMultiHandler(slog.LevelDebug, newConsoleHandler(slog.LevelDebug))
+	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})
 	slog.SetDefault(slog.New(handler))
-
-	// 同时将标准 log 包的输出也桥接到 slog
 	slog.SetLogLoggerLevel(slog.LevelDebug)
 }
 

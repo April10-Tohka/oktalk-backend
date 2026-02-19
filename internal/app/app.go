@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"time"
 
 	"gorm.io/gorm"
@@ -21,6 +22,7 @@ import (
 	infraLLM "pronunciation-correction-system/internal/infrastructure/llm/qwen"
 	infraOSS "pronunciation-correction-system/internal/infrastructure/oss/aliyun"
 	infraTTS "pronunciation-correction-system/internal/infrastructure/tts/aliyun"
+	"pronunciation-correction-system/internal/pkg/logger"
 	"pronunciation-correction-system/internal/service"
 )
 
@@ -61,6 +63,10 @@ func New(cfg *config.Config) (*App, error) {
 	}
 
 	// 按顺序初始化各组件
+	if err := app.initLogger(); err != nil {
+		return nil, fmt.Errorf("init logger: %w", err)
+	}
+
 	if err := app.initDatabase(); err != nil {
 		return nil, fmt.Errorf("init database: %w", err)
 	}
@@ -168,14 +174,21 @@ func (a *App) initRepositories() {
 	log.Println("[App] Repositories initialized")
 }
 
+// initLogger 初始化日志系统
+func (a *App) initLogger() error {
+	_, err := logger.Init(a.Config.Log)
+	return err
+}
+
 // initServices 初始化业务服务
 // TODO: Step2 注入真实依赖（Repos, Provider 等）
 func (a *App) initServices() {
-	a.AuthService = service.NewAuthService(nil)
-	a.UserService = service.NewUserService(nil)
-	a.ChatService = service.NewChatService(nil)
-	a.EvaluateService = service.NewEvaluateService(nil)
-	a.ReportService = service.NewReportService(nil)
+	appLogger := slog.Default()
+	a.AuthService = service.NewAuthService(appLogger)
+	a.UserService = service.NewUserService(appLogger)
+	a.ChatService = service.NewChatService(a.Repos, a.ASRProvider, a.LLMProvider, a.TTSProvider, a.OSSProvider, appLogger)
+	a.EvaluateService = service.NewEvaluateService(appLogger)
+	a.ReportService = service.NewReportService(appLogger)
 
 	log.Println("[App] Services initialized")
 }
@@ -222,6 +235,10 @@ func (a *App) Close() {
 	// 关闭数据库
 	if a.DB != nil {
 		_ = db.Close(a.DB)
+	}
+
+	if err := logger.Sync(); err != nil {
+		log.Printf("[App] Logger sync failed: %v", err)
 	}
 
 	log.Println("[App] All resources closed")

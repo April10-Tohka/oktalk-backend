@@ -15,7 +15,6 @@ import (
 // 同时自动注入 TraceID 和 Error 级别调用栈
 type MultiHandler struct {
 	handlers []slog.Handler // 底层 Handler 列表
-	level    slog.Level     // 最低日志级别
 }
 
 // 确保 MultiHandler 实现了 slog.Handler 接口
@@ -24,17 +23,21 @@ var _ slog.Handler = (*MultiHandler)(nil)
 // newMultiHandler 创建多路输出 Handler
 // level: 最低日志级别
 // handlers: 底层 Handler 列表
-func newMultiHandler(level slog.Level, handlers ...slog.Handler) *MultiHandler {
+func newMultiHandler(handlers ...slog.Handler) *MultiHandler {
 	return &MultiHandler{
 		handlers: handlers,
-		level:    level,
 	}
 }
 
 // Enabled 判断指定级别的日志是否启用
 // 只要有一个底层 Handler 启用了该级别，就返回 true
-func (h *MultiHandler) Enabled(_ context.Context, level slog.Level) bool {
-	return level >= h.level
+func (h *MultiHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, handler := range h.handlers {
+		if handler.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
 }
 
 // Handle 处理日志记录
@@ -50,7 +53,7 @@ func (h *MultiHandler) Handle(ctx context.Context, record slog.Record) error {
 
 	// Error 级别自动添加调用栈信息
 	if r.Level >= slog.LevelError {
-		stack := captureStack(2, 10) // skip=2 跳过 Handle 和 captureStack
+		stack := captureStack(3, 12)
 		if stack != "" {
 			r.AddAttrs(slog.String("stack", stack))
 		}
@@ -76,7 +79,6 @@ func (h *MultiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 	return &MultiHandler{
 		handlers: newHandlers,
-		level:    h.level,
 	}
 }
 
@@ -91,15 +93,14 @@ func (h *MultiHandler) WithGroup(name string) slog.Handler {
 	}
 	return &MultiHandler{
 		handlers: newHandlers,
-		level:    h.level,
 	}
 }
 
 // ===================== Handler 工厂方法 =====================
 
 // newConsoleHandler 创建控制台文本 Handler
-// 使用彩色输出，时间格式为 "2006-01-02 15:04:05"
-func newConsoleHandler(level slog.Level) slog.Handler {
+// 时间格式为 "2006-01-02 15:04:05"，可选彩色输出
+func newConsoleHandler(level slog.Level, colorful bool) slog.Handler {
 	opts := &slog.HandlerOptions{
 		Level: level,
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
@@ -112,9 +113,11 @@ func newConsoleHandler(level slog.Level) slog.Handler {
 		},
 	}
 
-	// 使用彩色 Writer 包装 Stdout
-	colorOut := &colorWriter{w: os.Stdout}
-	return slog.NewTextHandler(colorOut, opts)
+	if colorful {
+		colorOut := &colorWriter{w: os.Stdout}
+		return slog.NewTextHandler(colorOut, opts)
+	}
+	return slog.NewTextHandler(os.Stdout, opts)
 }
 
 // newFileHandler 创建文件 JSON Handler

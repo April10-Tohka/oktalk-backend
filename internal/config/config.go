@@ -52,9 +52,58 @@ type JWTConfig struct {
 
 // LogConfig 日志配置
 type LogConfig struct {
-	Level  string `mapstructure:"level"`  // debug, info, warn, error
-	Output string `mapstructure:"output"` // stdout, file
-	File   string `mapstructure:"file"`   // 日志文件路径
+	// 环境：development, production
+	Environment string `yaml:"environment" mapstructure:"environment"`
+	// 日志级别：debug, info, warn, error
+	Level string `yaml:"level" mapstructure:"level"`
+	// 控制台输出配置
+	Console ConsoleConfig `yaml:"console" mapstructure:"console"`
+	// 文件输出配置
+	File FileConfig `yaml:"file" mapstructure:"file"`
+}
+
+// ConsoleConfig 控制台输出配置
+type ConsoleConfig struct {
+	// 是否启用控制台输出
+	Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+	// 是否彩色输出
+	Colorful bool `yaml:"colorful" mapstructure:"colorful"`
+}
+
+// FileConfig 文件输出配置
+type FileConfig struct {
+	// 是否启用文件输出
+	Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+	// 日志文件路径
+	Filename string `yaml:"filename" mapstructure:"filename"`
+	// 单个文件最大大小（MB）
+	MaxSize int `yaml:"max_size" mapstructure:"max_size"`
+	// 保留的旧日志文件数量
+	MaxBackups int `yaml:"max_backups" mapstructure:"max_backups"`
+	// 保留的旧日志文件天数
+	MaxAge int `yaml:"max_age" mapstructure:"max_age"`
+	// 是否压缩旧日志文件
+	Compress bool `yaml:"compress" mapstructure:"compress"`
+}
+
+// DefaultConfig 默认日志配置
+func DefaultConfig() *LogConfig {
+	return &LogConfig{
+		Environment: "development",
+		Level:       "debug",
+		Console: ConsoleConfig{
+			Enabled:  true,
+			Colorful: true,
+		},
+		File: FileConfig{
+			Enabled:    true,
+			Filename:   "logs/app.log",
+			MaxSize:    100,
+			MaxBackups: 30,
+			MaxAge:     7,
+			Compress:   true,
+		},
+	}
 }
 
 // ===================== LLM 大语言模型 =====================

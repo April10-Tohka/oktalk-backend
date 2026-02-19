@@ -2,8 +2,16 @@
 package handler
 
 import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"time"
+
 	"github.com/gin-gonic/gin"
 
+	httpx "pronunciation-correction-system/internal/pkg/http"
+	"pronunciation-correction-system/internal/pkg/logger"
 	"pronunciation-correction-system/internal/service"
 )
 
@@ -20,13 +28,66 @@ func NewChatHandler(chatService service.ChatService) *ChatHandler {
 // ChatMVP POST /api/v1/chat/MVP
 // 同步语音对话 MVP（ASR + LLM + TTS，返回音频流）
 func (h *ChatHandler) ChatMVP(c *gin.Context) {
-	// TODO: Step2 实现
-	// 1. 解析 multipart/form-data: audio_file, audio_type, conversation_type, difficulty_level
-	// 2. 从 Context 获取 user_id
-	// 3. 调用 h.chatService.ChatMVP(ctx, req)
-	// 4. 成功：c.Data(200, "audio/mpeg", audioData)
-	// 5. 失败：InternalError(c, err.Error())
-	InternalError(c, "not implemented")
+	// 步骤 1：解析 multipart/form-data
+	fileHeader, err := c.FormFile("audio_file")
+	if err != nil {
+		logger.ErrorContext(c.Request.Context(), "chat mvp missing audio_file", "error", err)
+		BadRequest(c, "audio_file is required")
+		return
+	}
+	audioType := c.PostForm("audio_type")
+	if audioType == "" {
+		logger.ErrorContext(c.Request.Context(), "chat mvp missing audio_type", "error", errors.New("audio_type is required"))
+		BadRequest(c, "audio_type is required")
+		return
+	}
+	conversationType := c.PostForm("conversation_type")
+	difficultyLevel := c.PostForm("difficulty_level")
+
+	// 步骤 2：读取音频数据
+	file, err := fileHeader.Open()
+	if err != nil {
+		logger.ErrorContext(c.Request.Context(), "chat mvp open file failed", "error", err)
+		InternalError(c, "failed to read audio file")
+		return
+	}
+	defer file.Close()
+
+	audioData, err := io.ReadAll(file)
+	if err != nil {
+		logger.ErrorContext(c.Request.Context(), "chat mvp read file failed", "error", err)
+		InternalError(c, "failed to read audio data")
+		return
+	}
+
+	// 步骤 3：获取 user_id
+	userID := httpx.GetUserID(c)
+	if userID == "" {
+		logger.ErrorContext(c.Request.Context(), "chat mvp user id missing", "error", errors.New("user id is empty"))
+		Unauthorized(c)
+		return
+	}
+
+	// 步骤 4：设置超时
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	defer cancel()
+
+	// 步骤 5：调用 Service
+	audioReply, err := h.chatService.ChatMVP(ctx, &service.ChatMVPRequest{
+		AudioData:        audioData,
+		AudioType:        audioType,
+		ConversationType: conversationType,
+		DifficultyLevel:  difficultyLevel,
+		UserID:           userID,
+	})
+	if err != nil {
+		logger.ErrorContext(ctx, "chat mvp service failed", "error", err)
+		InternalError(c, err.Error())
+		return
+	}
+
+	// 步骤 6：返回音频流
+	c.Data(http.StatusOK, "audio/mpeg", audioReply)
 }
 
 // SubmitChat POST /api/v1/chat/submit

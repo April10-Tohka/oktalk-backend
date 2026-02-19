@@ -3,7 +3,16 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
+
+	"pronunciation-correction-system/internal/db"
+	"pronunciation-correction-system/internal/domain"
+	"pronunciation-correction-system/internal/model"
+	"pronunciation-correction-system/internal/pkg/logger"
+	"pronunciation-correction-system/internal/pkg/uuid"
 )
 
 // ===== 请求结构 =====
@@ -123,29 +132,181 @@ type ChatService interface {
 
 // chatServiceImpl Chat Service 实现（暂为空实现）
 type chatServiceImpl struct {
-	// TODO: Step2 注入依赖
-	// conversationRepo db.VoiceConversationRepository
-	// messageRepo      db.ConversationMessageRepository
-	// asrProvider       domain.ASRProvider
-	// llmProvider       domain.LLMProvider
-	// ttsProvider       domain.TTSProvider
-	// ossProvider       domain.OSSProvider
-	logger *slog.Logger
+	// Step2 注入依赖
+	conversationRepo db.VoiceConversationRepository
+	messageRepo      db.ConversationMessageRepository
+	asrProvider      domain.ASRProvider
+	llmProvider      domain.LLMProvider
+	ttsProvider      domain.TTSProvider
+	ossProvider      domain.OSSProvider
+	logger           *slog.Logger
 }
 
 // NewChatService 创建 ChatService
-func NewChatService(logger *slog.Logger) ChatService {
-	return &chatServiceImpl{logger: logger}
+func NewChatService(repos *db.Repositories, asr domain.ASRProvider, llm domain.LLMProvider, tts domain.TTSProvider, oss domain.OSSProvider, logger *slog.Logger) ChatService {
+	var conversationRepo db.VoiceConversationRepository
+	var messageRepo db.ConversationMessageRepository
+	if repos != nil {
+		conversationRepo = repos.VoiceConversation
+		messageRepo = repos.ConversationMessage
+	}
+	return &chatServiceImpl{
+		conversationRepo: conversationRepo,
+		messageRepo:      messageRepo,
+		asrProvider:      asr,
+		llmProvider:      llm,
+		ttsProvider:      tts,
+		ossProvider:      oss,
+		logger:           logger,
+	}
 }
 
 func (s *chatServiceImpl) ChatMVP(ctx context.Context, req *ChatMVPRequest) ([]byte, error) {
-	// TODO: Step2 实现
-	// 1. ASR: 识别音频 → 文本
-	// 2. LLM: 生成 AI 回复文本
-	// 3. TTS: 合成 AI 回复 → 音频
-	// 4. 保存对话记录到数据库
-	// 5. 返回音频二进制数据
-	return nil, nil
+	// 步骤 1：基础校验
+	if req == nil {
+		err := errors.New("chat mvp request is nil")
+		logger.ErrorContext(ctx, "chat mvp request invalid", "error", err)
+		return nil, err
+	}
+	if len(req.AudioData) == 0 {
+		err := errors.New("audio data is empty")
+		logger.ErrorContext(ctx, "chat mvp audio empty", "error", err)
+		return nil, err
+	}
+	if req.UserID == "" {
+		err := errors.New("user id is empty")
+		logger.ErrorContext(ctx, "chat mvp user id missing", "error", err)
+		return nil, err
+	}
+	if s.asrProvider == nil || s.llmProvider == nil || s.ttsProvider == nil {
+		err := errors.New("chat mvp provider not initialized")
+		logger.ErrorContext(ctx, "chat mvp provider missing", "error", err)
+		return nil, err
+	}
+
+	audioType := strings.ToLower(strings.TrimSpace(req.AudioType))
+	if audioType == "" {
+		audioType = "wav"
+	}
+	conversationType := strings.TrimSpace(req.ConversationType)
+	if conversationType == "" {
+		conversationType = "free_talk"
+	}
+	difficultyLevel := strings.TrimSpace(req.DifficultyLevel)
+	if difficultyLevel == "" {
+		difficultyLevel = "beginner"
+	}
+
+	// 步骤 2：ASR 识别
+	asrResult, err := s.asrProvider.RecognizeAudio(ctx, req.AudioData, audioType, 16000)
+	if err != nil {
+		logger.ErrorContext(ctx, "chat mvp asr failed", "error", err)
+		return nil, err
+	}
+	userText := strings.TrimSpace(asrResult.Text)
+	if userText == "" {
+		err := errors.New("asr result is empty")
+		logger.ErrorContext(ctx, "chat mvp asr empty", "error", err)
+		return nil, err
+	}
+
+	// 步骤 3：LLM 生成回复
+	systemPrompt := fmt.Sprintf("你是一位友好的儿童英语口语老师，鼓励式互动，回答简短易懂。对话类型：%s。难度等级：%s。", conversationType, difficultyLevel)
+	replyText, err := s.llmProvider.Chat(ctx, systemPrompt, userText)
+	if err != nil {
+		logger.ErrorContext(ctx, "chat mvp llm failed", "error", err)
+		return nil, err
+	}
+
+	// 步骤 4：TTS 合成
+	ttsAudio, err := s.ttsProvider.Synthesize(ctx, replyText, nil)
+	if err != nil {
+		logger.ErrorContext(ctx, "chat mvp tts failed", "error", err)
+		return nil, err
+	}
+
+	// 步骤 5：上传用户音频与 AI 音频到 OSS
+	conversationID := uuid.New()
+	userMsgID := uuid.New()
+	aiMsgID := uuid.New()
+	userAudioKey := fmt.Sprintf("chat/%s/user_%s.%s", conversationID, userMsgID, audioType)
+	aiAudioKey := fmt.Sprintf("chat/%s/ai_%s.mp3", conversationID, aiMsgID)
+
+	var userAudioURL string
+	var aiAudioURL string
+	if s.ossProvider != nil {
+		if url, uploadErr := s.ossProvider.UploadAudio(ctx, userAudioKey, req.AudioData); uploadErr != nil {
+			logger.ErrorContext(ctx, "chat mvp upload user audio failed", "error", uploadErr)
+		} else {
+			userAudioURL = url
+		}
+		if url, uploadErr := s.ossProvider.UploadAudio(ctx, aiAudioKey, ttsAudio); uploadErr != nil {
+			logger.ErrorContext(ctx, "chat mvp upload ai audio failed", "error", uploadErr)
+		} else {
+			aiAudioURL = url
+		}
+	} else {
+		// 步骤 5：如果 OSS 未初始化，仅记录日志
+		logger.ErrorContext(ctx, "chat mvp oss provider not initialized", "error", errors.New("oss provider nil"))
+	}
+
+	// 步骤 6：保存对话记录到数据库（失败不影响主流程）
+	if s.conversationRepo != nil && s.messageRepo != nil {
+		conversation := &model.VoiceConversation{
+			ID:               conversationID,
+			UserID:           req.UserID,
+			Topic:            "General",
+			DifficultyLevel:  difficultyLevel,
+			ConversationType: conversationType,
+			MessageCount:     2,
+			DurationSeconds:  asrResult.Duration,
+			Status:           "completed",
+		}
+		if saveErr := s.conversationRepo.Create(ctx, conversation); saveErr != nil {
+			logger.ErrorContext(ctx, "chat mvp save conversation failed", "error", saveErr)
+		} else {
+			var userDuration *int
+			if asrResult.Duration > 0 {
+				userDuration = &asrResult.Duration
+			}
+			var userAudioPtr *string
+			if userAudioURL != "" {
+				userAudioPtr = &userAudioURL
+			}
+			var aiAudioPtr *string
+			if aiAudioURL != "" {
+				aiAudioPtr = &aiAudioURL
+			}
+
+			messages := []*model.ConversationMessage{
+				{
+					ID:             userMsgID,
+					ConversationID: conversationID,
+					SenderType:     "user",
+					MessageText:    userText,
+					AudioURL:       userAudioPtr,
+					AudioDuration:  userDuration,
+					SequenceNumber: 1,
+				},
+				{
+					ID:             aiMsgID,
+					ConversationID: conversationID,
+					SenderType:     "ai",
+					MessageText:    replyText,
+					AudioURL:       aiAudioPtr,
+					SequenceNumber: 2,
+				},
+			}
+			if saveErr := s.messageRepo.BatchCreate(ctx, messages); saveErr != nil {
+				logger.ErrorContext(ctx, "chat mvp save messages failed", "error", saveErr)
+			}
+		}
+	} else {
+		logger.ErrorContext(ctx, "chat mvp repository not initialized", "error", errors.New("repository nil"))
+	}
+
+	// 步骤 7：返回音频
+	return ttsAudio, nil
 }
 
 func (s *chatServiceImpl) SubmitChat(ctx context.Context, req *SubmitChatRequest) (string, error) {
