@@ -10,7 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	httpx "pronunciation-correction-system/internal/pkg/http"
+	"pronunciation-correction-system/internal/handler/middleware"
 	"pronunciation-correction-system/internal/pkg/logger"
 	"pronunciation-correction-system/internal/service"
 )
@@ -60,9 +60,10 @@ func (h *ChatHandler) ChatMVP(c *gin.Context) {
 		return
 	}
 
-	// 步骤 3：获取 user_id
-	userID := httpx.GetUserID(c)
-	if userID == "" {
+	// 步骤 3：从 gin.Context 获取 user_id
+	// 从 gin.Context 获取 user_id
+	userID, exists := c.Get(string(middleware.UserIDKey))
+	if !exists {
 		logger.ErrorContext(c.Request.Context(), "chat mvp user id missing", "error", errors.New("user id is empty"))
 		Unauthorized(c)
 		return
@@ -78,7 +79,7 @@ func (h *ChatHandler) ChatMVP(c *gin.Context) {
 		AudioType:        audioType,
 		ConversationType: conversationType,
 		DifficultyLevel:  difficultyLevel,
-		UserID:           userID,
+		UserID:           userID.(string),
 	})
 	if err != nil {
 		logger.ErrorContext(ctx, "chat mvp service failed", "error", err)
