@@ -20,9 +20,10 @@ type Config struct {
 
 // ServerConfig HTTP 服务器配置
 type ServerConfig struct {
-	Port int    `mapstructure:"port"`
-	Mode string `mapstructure:"mode"` // debug, release, test
-	Name string `mapstructure:"name"`
+	Port        int    `mapstructure:"port"`
+	Mode        string `mapstructure:"mode"` // debug, release, test
+	Name        string `mapstructure:"name"`
+	Environment string `mapstructure:"environment"`
 }
 
 // DatabaseConfig 数据库配置

@@ -59,6 +59,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.port", 8080)
 	v.SetDefault("server.mode", "debug")
 	v.SetDefault("server.name", "pronunciation-correction-system")
+	v.SetDefault("server.environment", "development")
 
 	// 数据库默认配置
 	v.SetDefault("database.host", "localhost")
