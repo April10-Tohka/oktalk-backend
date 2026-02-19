@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/redis/go-redis/v9"
 )
 
 // Commands Redis 命令封装
@@ -44,7 +44,7 @@ func (c *Commands) SetNX(ctx context.Context, key string, value interface{}, exp
 
 // SetEX 设置值并指定过期时间
 func (c *Commands) SetEX(ctx context.Context, key string, value interface{}, expiration time.Duration) error {
-	return c.client.rdb.SetEX(ctx, key, value, expiration).Err()
+	return c.client.rdb.SetEx(ctx, key, value, expiration).Err()
 }
 
 // GetSet 获取旧值并设置新值
@@ -281,7 +281,7 @@ func (c *Commands) SCard(ctx context.Context, key string) (int64, error) {
 // ==================== Sorted Set 操作 ====================
 
 // ZAdd 有序集合添加
-func (c *Commands) ZAdd(ctx context.Context, key string, members ...*redis.Z) error {
+func (c *Commands) ZAdd(ctx context.Context, key string, members ...redis.Z) error {
 	return c.client.rdb.ZAdd(ctx, key, members...).Err()
 }
 

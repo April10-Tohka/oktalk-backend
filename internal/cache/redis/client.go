@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/redis/go-redis/v9"
 
 	"pronunciation-correction-system/internal/config"
 )
@@ -37,9 +37,9 @@ func DefaultClientConfig() *ClientConfig {
 		Port:         6379,
 		Password:     "",
 		DB:           0,
-		PoolSize:     50,           // 连接池大小
-		MinIdleConns: 10,           // 最小空闲连接
-		MaxRetries:   3,            // 命令重试次数
+		PoolSize:     50, // 连接池大小
+		MinIdleConns: 10, // 最小空闲连接
+		MaxRetries:   3,  // 命令重试次数
 		DialTimeout:  5 * time.Second,
 		ReadTimeout:  3 * time.Second,
 		WriteTimeout: 3 * time.Second,
