@@ -5,6 +5,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"runtime"
+	"strconv"
 	"sync"
 )
 
@@ -49,6 +51,16 @@ func (h *MultiHandler) Handle(ctx context.Context, record slog.Record) error {
 	// 从 context 中提取 TraceID 并注入到日志属性
 	if traceID := TraceIDFromContext(ctx); traceID != "" {
 		r.AddAttrs(slog.String("trace_id", traceID))
+	}
+
+	if r.PC != 0 {
+		frames := runtime.CallersFrames([]uintptr{r.PC})
+		if frame, _ := frames.Next(); frame.File != "" && frame.Line > 0 {
+			r.AddAttrs(
+				slog.String("file", frame.File+":"+strconv.Itoa(frame.Line)),
+			)
+
+		}
 	}
 
 	// Error 级别自动添加调用栈信息

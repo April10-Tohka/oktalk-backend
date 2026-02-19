@@ -94,21 +94,6 @@ func Sync() error {
 
 // ===================== 便捷函数 =====================
 
-// L 获取带 TraceID 的 Logger
-// 适用于在一个函数中多次记录日志的场景
-//
-// 用法：
-//
-//	log := logger.L(ctx)
-//	log.Info("step 1 done")
-//	log.Info("step 2 done")
-func L(ctx context.Context) *slog.Logger {
-	if traceID := TraceIDFromContext(ctx); traceID != "" {
-		return slog.Default().With("trace_id", traceID)
-	}
-	return slog.Default()
-}
-
 // InfoContext 带 context 的 Info 日志（便捷函数）
 func InfoContext(ctx context.Context, msg string, args ...any) {
 	slog.InfoContext(ctx, msg, args...)

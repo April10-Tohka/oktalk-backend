@@ -40,7 +40,7 @@ func Setup(cfg *config.Config, handlers *handler.Handlers) *gin.Engine {
 
 		// ── 需要认证的路由 ──
 		authed := v1.Group("")
-		authed.Use(middleware.Auth())
+		authed.Use(middleware.Auth(cfg))
 		{
 			setupChatRoutes(authed, handlers.Chat)         // AI 语音对话
 			setupEvaluateRoutes(authed, handlers.Evaluate) // AI 发音纠正
