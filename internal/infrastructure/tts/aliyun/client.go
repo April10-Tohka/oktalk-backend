@@ -7,7 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
+
 	"net/http"
 	"sync"
 	"time"
@@ -17,6 +17,7 @@ import (
 
 	"pronunciation-correction-system/internal/config"
 	"pronunciation-correction-system/internal/domain"
+	"pronunciation-correction-system/internal/pkg/logger"
 )
 
 // ===================== 默认配置 =====================
@@ -65,7 +66,7 @@ func newInternalClient(cfg config.AliyunTTSConfig) *internalClient {
 	// 构建默认参数
 	defaults := buildDefaultParams(cfg.DefaultOptions)
 
-	slog.Info("[AliyunTTS] Client initialized",
+	logger.Info("[AliyunTTS] Client initialized",
 		"model", model,
 		"endpoint", wsURL,
 		"voice", defaults.Voice,
@@ -150,6 +151,7 @@ func (c *internalClient) synthesize(ctx context.Context, texts []string, opts *d
 	start := time.Now()
 	params := c.mergeParams(opts)
 
+	// 建立 WebSocket 连接 + 发送 run-task
 	session, err := c.newSession(ctx, params)
 	if err != nil {
 		return nil, err
@@ -180,7 +182,7 @@ func (c *internalClient) synthesize(ctx context.Context, texts []string, opts *d
 	}
 
 	elapsed := time.Since(start)
-	slog.Info("[AliyunTTS] Synthesis completed",
+	logger.Info("[AliyunTTS] Synthesis completed",
 		"texts_count", len(texts),
 		"audio_bytes", len(audioData),
 		"elapsed", elapsed.String(),
@@ -234,7 +236,7 @@ func (c *internalClient) synthesizeStream(ctx context.Context, texts []string, o
 
 // close 关闭客户端
 func (c *internalClient) close() error {
-	slog.Info("[AliyunTTS] Client closed")
+	logger.Info("[AliyunTTS] Client closed")
 	return nil
 }
 
@@ -273,7 +275,7 @@ func (c *internalClient) newSession(ctx context.Context, params wsParams) (*synt
 	}
 
 	// 3. 发送 run-task 指令
-	if err := session.sendRunTask(c.model, params); err != nil {
+	if err := session.sendRunTask(ctx, c.model, params); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("send run-task failed: %w", err)
 	}
@@ -295,21 +297,25 @@ func (c *internalClient) connectWebSocket(ctx context.Context) (*websocket.Conn,
 	dialer := websocket.Dialer{
 		HandshakeTimeout: defaultConnectTimeout,
 	}
-
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
 	conn, _, err := dialer.DialContext(ctx, c.wsURL, header)
 	if err != nil {
-		slog.Error("[AliyunTTS] WebSocket connect failed", "error", err)
+		logger.ErrorContext(ctx, "[AliyunTTS] WebSocket connect failed", "error", err)
 		return nil, fmt.Errorf("websocket dial failed: %w", err)
 	}
 
-	slog.Debug("[AliyunTTS] WebSocket connected", "url", c.wsURL)
+	logger.DebugContext(ctx, "[AliyunTTS] WebSocket connected", "url", c.wsURL)
 	return conn, nil
 }
 
 // ===================== 发送指令 =====================
 
 // sendRunTask 发送 run-task 指令，启动合成任务
-func (s *synthesisSession) sendRunTask(model string, params wsParams) error {
+func (s *synthesisSession) sendRunTask(ctx context.Context, model string, params wsParams) error {
 	event := wsEvent{
 		Header: wsHeader{
 			Action:    actionRunTask,
@@ -331,6 +337,11 @@ func (s *synthesisSession) sendRunTask(model string, params wsParams) error {
 		return fmt.Errorf("marshal run-task failed: %w", err)
 	}
 
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	s.mu.Lock()
 	err = s.conn.WriteMessage(websocket.TextMessage, data)
 	s.mu.Unlock()
@@ -339,7 +350,7 @@ func (s *synthesisSession) sendRunTask(model string, params wsParams) error {
 		return fmt.Errorf("send run-task failed: %w", err)
 	}
 
-	slog.Debug("[AliyunTTS] Sent run-task",
+	logger.DebugContext(ctx, "[AliyunTTS] Sent run-task",
 		"task_id", s.taskID,
 		"model", model,
 		"voice", params.Voice,
@@ -374,7 +385,7 @@ func (s *synthesisSession) sendContinueTask(text string) error {
 		return fmt.Errorf("send continue-task failed: %w", err)
 	}
 
-	slog.Debug("[AliyunTTS] Sent continue-task",
+	logger.Debug("[AliyunTTS] Sent continue-task",
 		"task_id", s.taskID,
 		"text_len", len(text),
 	)
@@ -407,7 +418,7 @@ func (s *synthesisSession) sendFinishTask() error {
 		return fmt.Errorf("send finish-task failed: %w", err)
 	}
 
-	slog.Debug("[AliyunTTS] Sent finish-task", "task_id", s.taskID)
+	logger.Debug("[AliyunTTS] Sent finish-task", "task_id", s.taskID)
 	return nil
 }
 
@@ -434,7 +445,7 @@ func (s *synthesisSession) receiveLoop(ctx context.Context) {
 				return
 			}
 			// 超时或连接断开
-			slog.Error("[AliyunTTS] Read message failed",
+			logger.Error("[AliyunTTS] Read message failed",
 				"error", err,
 				"task_id", s.taskID,
 			)
@@ -447,7 +458,7 @@ func (s *synthesisSession) receiveLoop(ctx context.Context) {
 			s.audioBuffer = append(s.audioBuffer, message...)
 			s.audioMu.Unlock()
 
-			slog.Debug("[AliyunTTS] Received audio chunk",
+			logger.Debug("[AliyunTTS] Received audio chunk",
 				"bytes", len(message),
 				"task_id", s.taskID,
 			)
@@ -457,7 +468,7 @@ func (s *synthesisSession) receiveLoop(ctx context.Context) {
 		// 处理文本消息（事件）
 		var event wsEvent
 		if err := json.Unmarshal(message, &event); err != nil {
-			slog.Warn("[AliyunTTS] Parse event failed",
+			logger.Warn("[AliyunTTS] Parse event failed",
 				"error", err,
 				"task_id", s.taskID,
 			)
@@ -466,18 +477,18 @@ func (s *synthesisSession) receiveLoop(ctx context.Context) {
 
 		switch event.Header.Event {
 		case eventTaskStarted:
-			slog.Info("[AliyunTTS] Task started", "task_id", s.taskID)
+			logger.Info("[AliyunTTS] Task started", "task_id", s.taskID)
 			if !taskStartedNotified {
 				close(s.taskStarted)
 				taskStartedNotified = true
 			}
 
 		case eventResultGenerated:
-			slog.Debug("[AliyunTTS] Result generated",
+			logger.Debug("[AliyunTTS] Result generated",
 				"task_id", s.taskID,
 			)
 			if event.Payload.Usage != nil {
-				slog.Debug("[AliyunTTS] Usage info",
+				logger.Debug("[AliyunTTS] Usage info",
 					"characters", event.Payload.Usage.Characters,
 					"duration", event.Payload.Usage.Duration,
 					"task_id", s.taskID,
@@ -485,7 +496,7 @@ func (s *synthesisSession) receiveLoop(ctx context.Context) {
 			}
 
 		case eventTaskFinished:
-			slog.Info("[AliyunTTS] Task finished", "task_id", s.taskID)
+			logger.Info("[AliyunTTS] Task finished", "task_id", s.taskID)
 			return
 
 		case eventTaskFailed:
@@ -493,7 +504,7 @@ func (s *synthesisSession) receiveLoop(ctx context.Context) {
 			if errMsg == "" {
 				errMsg = "unknown error"
 			}
-			slog.Error("[AliyunTTS] Task failed",
+			logger.Error("[AliyunTTS] Task failed",
 				"error_code", event.Header.ErrorCode,
 				"error_message", errMsg,
 				"task_id", s.taskID,
@@ -506,7 +517,7 @@ func (s *synthesisSession) receiveLoop(ctx context.Context) {
 			return
 
 		default:
-			slog.Warn("[AliyunTTS] Unknown event",
+			logger.Warn("[AliyunTTS] Unknown event",
 				"event", event.Header.Event,
 				"task_id", s.taskID,
 			)
@@ -606,7 +617,7 @@ func (s *synthesisSession) receiveAndStream(ctx context.Context, audioChan chan<
 
 		switch event.Header.Event {
 		case eventTaskFinished:
-			slog.Info("[AliyunTTS] Stream task finished", "task_id", s.taskID)
+			logger.Info("[AliyunTTS] Stream task finished", "task_id", s.taskID)
 			return nil
 
 		case eventTaskFailed:
