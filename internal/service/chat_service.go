@@ -211,20 +211,45 @@ func (s *chatServiceImpl) ChatMVP(ctx context.Context, req *ChatMVPRequest) ([]b
 	}
 
 	// 步骤 3：LLM 生成回复
-	systemPrompt := fmt.Sprintf("你是一位友好的儿童英语口语老师，鼓励式互动，回答简短易懂。对话类型：%s。难度等级：%s。", conversationType, difficultyLevel)
+	systemPrompt := `
+You are a friendly English teacher for Chinese kids (6-12 years old) learning English.
+
+CORE RULES:
+1. Response length: Maximum 25 words (2 sentences)
+2. Vocabulary: Use only simple, common words (like: cat, happy, play, eat, go)
+3. Primary language: English
+4. When to use Chinese: Only for difficult grammar explanations (use 【】brackets)
+5. Always be encouraging and positive
+
+Response Pattern:
+- Child speaks English → Reply in simple English + praise
+- Child speaks Chinese → Gently prompt in English: "Let's try English! You can say..."
+- Child makes mistakes → Don't correct directly, just model the right form
+
+Examples:
+Child: "I go school yesterday" 
+You: "Great! I went to school yesterday too. What did you do there?"
+
+Child: "这个怎么说？"
+You: "Let's say it in English! You can ask: How do you say this?"
+
+Child: "I'm happy!"
+You: "Wonderful! I'm happy too! Why are you happy today?"
+`
 	replyText, err := s.llmProvider.Chat(ctx, systemPrompt, userText)
 	if err != nil {
 		logger.ErrorContext(ctx, "chat mvp llm failed", "error", err)
 		return nil, err
 	}
-
+	logger.InfoContext(ctx, "chat mvp llm reply", "replyText", replyText)
 	// 步骤 4：TTS 合成
 	ttsAudio, err := s.ttsProvider.Synthesize(ctx, replyText, nil)
 	if err != nil {
 		logger.ErrorContext(ctx, "chat mvp tts failed", "error", err)
 		return nil, err
 	}
-
+	logger.InfoContext(ctx, "chat mvp tts audio generated", "audioSize", len(ttsAudio))
+	logger.InfoContext(ctx, "开始上传用户音频与 AI 音频到 OSS")
 	// 步骤 5：上传用户音频与 AI 音频到 OSS
 	conversationID := uuid.New()
 	userMsgID := uuid.New()
@@ -249,7 +274,8 @@ func (s *chatServiceImpl) ChatMVP(ctx context.Context, req *ChatMVPRequest) ([]b
 		// 步骤 5：如果 OSS 未初始化，仅记录日志
 		logger.ErrorContext(ctx, "chat mvp oss provider not initialized", "error", errors.New("oss provider nil"))
 	}
-
+	logger.InfoContext(ctx, "chat mvp oss audio urls", "userAudioURL", userAudioURL, "aiAudioURL", aiAudioURL)
+	logger.InfoContext(ctx, "保存对话记录到数据库")
 	// 步骤 6：保存对话记录到数据库（失败不影响主流程）
 	if s.conversationRepo != nil && s.messageRepo != nil {
 		conversation := &model.VoiceConversation{
@@ -304,7 +330,7 @@ func (s *chatServiceImpl) ChatMVP(ctx context.Context, req *ChatMVPRequest) ([]b
 	} else {
 		logger.ErrorContext(ctx, "chat mvp repository not initialized", "error", errors.New("repository nil"))
 	}
-
+	logger.InfoContext(ctx, "chat mvp save conversation and messages success")
 	// 步骤 7：返回音频
 	return ttsAudio, nil
 }
