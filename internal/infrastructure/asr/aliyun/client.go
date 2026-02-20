@@ -4,16 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
-
 	"pronunciation-correction-system/internal/config"
 	"pronunciation-correction-system/internal/domain"
+	"pronunciation-correction-system/internal/pkg/logger"
+
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 )
 
 // ===================== 默认配置 =====================
@@ -51,7 +51,7 @@ func newInternalClient(cfg config.AliyunASRConfig) *internalClient {
 		model = modelFunASR
 	}
 
-	log.Printf("[AliyunASR] Client initialized, model=%s, endpoint=%s", model, wsURL)
+	logger.Info("[AliyunASR] Client initialized, model=%s, endpoint=%s", model, wsURL)
 
 	return &internalClient{
 		apiKey: cfg.APIKey,
@@ -94,7 +94,7 @@ func (c *internalClient) recognizeAudio(ctx context.Context, audioData []byte, f
 	}
 
 	elapsed := time.Since(start)
-	log.Printf("[AliyunASR] Recognition completed: textLen=%d, duration=%ds, elapsed=%v",
+	logger.InfoContext(ctx, "[AliyunASR] Recognition completed: textLen=%d, duration=%ds, elapsed=%v",
 		len(fullText), duration, elapsed)
 
 	return &domain.ASRResult{
@@ -118,7 +118,7 @@ func (c *internalClient) recognizeStream(ctx context.Context, audioData []byte, 
 	handler := newEventHandler(taskID)
 
 	// 3. 发送 run-task 指令
-	if err := c.sendRunTask(conn, taskID, format, sampleRate); err != nil {
+	if err := c.sendRunTask(ctx, conn, taskID, format, sampleRate); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to send run-task: %w", err)
 	}
@@ -150,20 +150,25 @@ func (c *internalClient) connectWebSocket(ctx context.Context) (*websocket.Conn,
 		HandshakeTimeout: defaultConnectTimeout,
 	}
 
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("connect websocket canceled: %w", ctx.Err())
+	default:
+	}
 	conn, _, err := dialer.DialContext(ctx, c.wsURL, header)
 	if err != nil {
-		log.Printf("[AliyunASR] WebSocket connect failed: %v", err)
+		logger.ErrorContext(ctx, "[AliyunASR] WebSocket connect failed: %v", err)
 		return nil, fmt.Errorf("websocket dial failed: %w", err)
 	}
 
-	log.Printf("[AliyunASR] WebSocket connected to %s", c.wsURL)
+	logger.InfoContext(ctx, "[AliyunASR] WebSocket connected to %s", c.wsURL)
 	return conn, nil
 }
 
 // ===================== 发送指令 =====================
 
 // sendRunTask 发送 run-task 指令，启动识别任务
-func (c *internalClient) sendRunTask(conn *websocket.Conn, taskID, format string, sampleRate int) error {
+func (c *internalClient) sendRunTask(ctx context.Context, conn *websocket.Conn, taskID, format string, sampleRate int) error {
 	event := wsEvent{
 		Header: wsHeader{
 			Action:    actionRunTask,
@@ -187,18 +192,23 @@ func (c *internalClient) sendRunTask(conn *websocket.Conn, taskID, format string
 	if err != nil {
 		return fmt.Errorf("marshal run-task failed: %w", err)
 	}
-
+	// 检查上下文是否已取消
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("send run-task canceled: %w", ctx.Err())
+	default:
+	}
 	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 		return fmt.Errorf("send run-task failed: %w", err)
 	}
 
-	log.Printf("[AliyunASR] Sent run-task: taskID=%s, model=%s, format=%s, sampleRate=%d",
+	logger.InfoContext(ctx, "[AliyunASR] Sent run-task: taskID=%s, model=%s, format=%s, sampleRate=%d",
 		taskID, c.model, format, sampleRate)
 	return nil
 }
 
 // sendFinishTask 发送 finish-task 指令，通知服务端音频发送完毕
-func (c *internalClient) sendFinishTask(conn *websocket.Conn, taskID string) error {
+func (c *internalClient) sendFinishTask(ctx context.Context, conn *websocket.Conn, taskID string) error {
 	event := wsEvent{
 		Header: wsHeader{
 			Action:    actionFinishTask,
@@ -214,12 +224,17 @@ func (c *internalClient) sendFinishTask(conn *websocket.Conn, taskID string) err
 	if err != nil {
 		return fmt.Errorf("marshal finish-task failed: %w", err)
 	}
-
+	// 检查上下文是否已取消
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("send finish-task canceled: %w", ctx.Err())
+	default:
+	}
 	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 		return fmt.Errorf("send finish-task failed: %w", err)
 	}
 
-	log.Printf("[AliyunASR] Sent finish-task: taskID=%s", taskID)
+	logger.InfoContext(ctx, "[AliyunASR] Sent finish-task: taskID=%s", taskID)
 	return nil
 }
 
@@ -234,9 +249,17 @@ func (c *internalClient) waitTaskStarted(ctx context.Context, conn *websocket.Co
 	for {
 		select {
 		case <-timeoutCtx.Done():
+			// 如果是父ctx取消，直接返回错误
+			if ctx.Err() != nil {
+				return fmt.Errorf("wait task-started canceled: %w", ctx.Err())
+			}
+			// 如果是超时，返回超时错误
 			return fmt.Errorf("wait task-started timeout after %v", defaultTaskStartTimeout)
 		default:
 		}
+
+		// 设置 WebSocket 读取超时
+		conn.SetReadDeadline(time.Now().Add(defaultTaskStartTimeout))
 
 		_, message, err := conn.ReadMessage()
 		if err != nil {
@@ -245,13 +268,13 @@ func (c *internalClient) waitTaskStarted(ctx context.Context, conn *websocket.Co
 
 		var event wsEvent
 		if err := json.Unmarshal(message, &event); err != nil {
-			log.Printf("[AliyunASR] Parse event failed while waiting task-started: %v", err)
+			logger.ErrorContext(ctx, "[AliyunASR] Parse event failed while waiting task-started: %v", err)
 			continue
 		}
 
 		switch event.Header.Event {
 		case eventTaskStarted:
-			log.Printf("[AliyunASR] Task started, taskID=%s", handler.taskID)
+			logger.InfoContext(ctx, "[AliyunASR] Task started, taskID=%s", handler.taskID)
 			return nil
 		case eventTaskFailed:
 			errMsg := event.Header.ErrorMessage
@@ -261,7 +284,7 @@ func (c *internalClient) waitTaskStarted(ctx context.Context, conn *websocket.Co
 			return fmt.Errorf("task failed before starting: code=%s, message=%s",
 				event.Header.ErrorCode, errMsg)
 		default:
-			log.Printf("[AliyunASR] Unexpected event while waiting task-started: %s", event.Header.Event)
+			logger.InfoContext(ctx, "[AliyunASR] Unexpected event while waiting task-started: %s", event.Header.Event)
 		}
 	}
 }
@@ -327,12 +350,13 @@ func (c *internalClient) sendAudioAndFinish(
 ) {
 	// 分片发送音频数据
 	chunkSize := defaultSendChunkSize
+	// 每次发送间隔，模拟实时音频流速率
 	interval := time.Duration(defaultSendInterval) * time.Millisecond
 
 	for offset := 0; offset < len(audioData); offset += chunkSize {
 		select {
 		case <-ctx.Done():
-			log.Printf("[AliyunASR] Audio sending canceled, taskID=%s", taskID)
+			logger.InfoContext(ctx, "[AliyunASR] Audio sending canceled, taskID=%s", taskID)
 			return
 		default:
 		}
@@ -342,8 +366,14 @@ func (c *internalClient) sendAudioAndFinish(
 			end = len(audioData)
 		}
 
+		// 检查上下文是否已取消
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		if err := conn.WriteMessage(websocket.BinaryMessage, audioData[offset:end]); err != nil {
-			log.Printf("[AliyunASR] Send audio chunk failed: %v, taskID=%s", err, taskID)
+			logger.ErrorContext(ctx, "[AliyunASR] Send audio chunk failed: %v, taskID=%s", err, taskID)
 			return
 		}
 
@@ -357,11 +387,11 @@ func (c *internalClient) sendAudioAndFinish(
 		}
 	}
 
-	log.Printf("[AliyunASR] Audio data sent, total=%d bytes, taskID=%s", len(audioData), taskID)
+	logger.InfoContext(ctx, "[AliyunASR] Audio data sent, total=%d bytes, taskID=%s", len(audioData), taskID)
 
 	// 发送 finish-task 指令
-	if err := c.sendFinishTask(conn, taskID); err != nil {
-		log.Printf("[AliyunASR] Send finish-task failed: %v, taskID=%s", err, taskID)
+	if err := c.sendFinishTask(ctx, conn, taskID); err != nil {
+		logger.ErrorContext(ctx, "[AliyunASR] Send finish-task failed: %v, taskID=%s", err, taskID)
 	}
 }
 
@@ -378,7 +408,7 @@ func (c *internalClient) receiveResults(
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("[AliyunASR] Receive canceled, taskID=%s", handler.taskID)
+			logger.InfoContext(ctx, "[AliyunASR] Receive canceled, taskID=%s", handler.taskID)
 			eventCh <- &domain.ASRStreamEvent{
 				Type:  "error",
 				Error: ctx.Err(),
@@ -390,13 +420,18 @@ func (c *internalClient) receiveResults(
 		// 设置读取超时，防止永久阻塞
 		_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			// 检查是否为正常关闭
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
 				return
 			}
-			log.Printf("[AliyunASR] Read message failed: %v, taskID=%s", err, handler.taskID)
+			logger.ErrorContext(ctx, "[AliyunASR] Read message failed: %v, taskID=%s", err, handler.taskID)
 			eventCh <- &domain.ASRStreamEvent{
 				Type:  "error",
 				Error: fmt.Errorf("read websocket message failed: %w", err),
@@ -407,12 +442,11 @@ func (c *internalClient) receiveResults(
 		// 解析事件
 		var event wsEvent
 		if err := json.Unmarshal(message, &event); err != nil {
-			log.Printf("[AliyunASR] Parse event failed: %v, taskID=%s", err, handler.taskID)
+			logger.ErrorContext(ctx, "[AliyunASR] Parse event failed: %v, taskID=%s", err, handler.taskID)
 			continue
 		}
-
 		// 处理事件
-		streamEvent, isTerminal, _ := handler.handleEvent(&event)
+		streamEvent, isTerminal, _ := handler.handleEvent(ctx, &event)
 
 		// 推送领域事件到通道
 		if streamEvent != nil {
@@ -432,6 +466,6 @@ func (c *internalClient) receiveResults(
 
 // close 关闭客户端
 func (c *internalClient) close() error {
-	log.Println("[AliyunASR] Client closed")
+	logger.Info("[AliyunASR] Client closed")
 	return nil
 }

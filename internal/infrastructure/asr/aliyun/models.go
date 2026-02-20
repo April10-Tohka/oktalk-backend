@@ -37,12 +37,12 @@ type wsHeader struct {
 // wsPayload 事件负载
 type wsPayload struct {
 	// 请求字段
-	TaskGroup  string    `json:"task_group,omitempty"`
-	Task       string    `json:"task,omitempty"`
-	Function   string    `json:"function,omitempty"`
-	Model      string    `json:"model,omitempty"`
-	Parameters wsParams  `json:"parameters,omitempty"`
-	Input      wsInput   `json:"input,omitempty"`
+	TaskGroup  string   `json:"task_group,omitempty"`
+	Task       string   `json:"task,omitempty"`
+	Function   string   `json:"function,omitempty"`
+	Model      string   `json:"model,omitempty"`
+	Parameters wsParams `json:"parameters,omitempty"`
+	Input      wsInput  `json:"input,omitempty"`
 
 	// 响应字段
 	Output wsOutput `json:"output,omitempty"`
@@ -85,6 +85,9 @@ type wsSentence struct {
 
 	// Words 单词级结果列表
 	Words []wsWord `json:"words,omitempty"`
+
+	// SentenceEnd 是否为句子结束
+	SentenceEnd bool `json:"sentence_end"`
 }
 
 // wsWord 单词级识别结果
