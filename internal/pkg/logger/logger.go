@@ -94,6 +94,26 @@ func Sync() error {
 
 // ===================== 便捷函数 =====================
 
+// Info 普通 Info 日志（便捷函数）
+func Info(msg string, args ...any) {
+	slog.Info(msg, args...)
+}
+
+// Warn 普通 Warn 日志（便捷函数）
+func Warn(msg string, args ...any) {
+	slog.Warn(msg, args...)
+}
+
+// Error 普通 Error 日志（便捷函数）
+func Error(msg string, args ...any) {
+	slog.Error(msg, args...)
+}
+
+// Debug 普通 Debug 日志（便捷函数）
+func Debug(msg string, args ...any) {
+	slog.Debug(msg, args...)
+}
+
 // InfoContext 带 context 的 Info 日志（便捷函数）
 func InfoContext(ctx context.Context, msg string, args ...any) {
 	slog.InfoContext(ctx, msg, args...)
