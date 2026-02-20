@@ -158,6 +158,13 @@ func (c *internalClient) synthesize(ctx context.Context, texts []string, opts *d
 	}
 	defer session.close()
 
+	// 发送 run-task 指令
+	if err := session.sendRunTask(ctx, c.model, params); err != nil {
+		return nil, err
+	}
+	// 启动后台接收消息 goroutine
+	go session.receiveLoop(ctx)
+
 	// 等待 task-started
 	if err := session.waitTaskStarted(ctx); err != nil {
 		return nil, err
@@ -165,13 +172,13 @@ func (c *internalClient) synthesize(ctx context.Context, texts []string, opts *d
 
 	// 发送所有文本（continue-task）
 	for _, text := range texts {
-		if err := session.sendContinueTask(text); err != nil {
+		if err := session.sendContinueTask(ctx, text); err != nil {
 			return nil, err
 		}
 	}
 
 	// 发送 finish-task
-	if err := session.sendFinishTask(); err != nil {
+	if err := session.sendFinishTask(ctx); err != nil {
 		return nil, err
 	}
 
@@ -182,7 +189,7 @@ func (c *internalClient) synthesize(ctx context.Context, texts []string, opts *d
 	}
 
 	elapsed := time.Since(start)
-	logger.Info("[AliyunTTS] Synthesis completed",
+	logger.InfoContext(ctx, "[AliyunTTS] Synthesis completed",
 		"texts_count", len(texts),
 		"audio_bytes", len(audioData),
 		"elapsed", elapsed.String(),
@@ -194,44 +201,45 @@ func (c *internalClient) synthesize(ctx context.Context, texts []string, opts *d
 
 // synthesizeStream 流式合成语音（实时推送音频块）
 func (c *internalClient) synthesizeStream(ctx context.Context, texts []string, opts *domain.SynthesizeOptions, audioChan chan<- []byte) error {
-	params := c.mergeParams(opts)
+	return nil
+	// params := c.mergeParams(opts)
 
-	session, err := c.newSession(ctx, params)
-	if err != nil {
-		return err
-	}
-	defer session.close()
+	// session, err := c.newSession(ctx, params)
+	// if err != nil {
+	// 	return err
+	// }
+	// defer session.close()
 
-	// 等待 task-started
-	if err := session.waitTaskStarted(ctx); err != nil {
-		return err
-	}
+	// // 等待 task-started
+	// if err := session.waitTaskStarted(ctx); err != nil {
+	// 	return err
+	// }
 
-	// 启动接收 goroutine（流式推送到 audioChan）
-	receiveDone := make(chan error, 1)
-	go func() {
-		receiveDone <- session.receiveAndStream(ctx, audioChan)
-	}()
+	// // 启动接收 goroutine（流式推送到 audioChan）
+	// receiveDone := make(chan error, 1)
+	// go func() {
+	// 	receiveDone <- session.receiveAndStream(ctx, audioChan)
+	// }()
 
-	// 发送所有文本
-	for _, text := range texts {
-		if err := session.sendContinueTask(text); err != nil {
-			return err
-		}
-	}
+	// // 发送所有文本
+	// for _, text := range texts {
+	// 	if err := session.sendContinueTask(text); err != nil {
+	// 		return err
+	// 	}
+	// }
 
-	// 发送 finish-task
-	if err := session.sendFinishTask(); err != nil {
-		return err
-	}
+	// // 发送 finish-task
+	// if err := session.sendFinishTask(); err != nil {
+	// 	return err
+	// }
 
-	// 等待接收完成
-	select {
-	case err := <-receiveDone:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	// // 等待接收完成
+	// select {
+	// case err := <-receiveDone:
+	// 	return err
+	// case <-ctx.Done():
+	// 	return ctx.Err()
+	// }
 }
 
 // close 关闭客户端
@@ -247,17 +255,18 @@ func (c *internalClient) close() error {
 type synthesisSession struct {
 	conn   *websocket.Conn
 	taskID string
-	mu     sync.Mutex // 保护 conn 的并发写入
 
 	// 同步信号
-	taskStarted chan struct{}
+	taskStarted  chan struct{} // 任务启动信号
+	taskFinished chan struct{} // 任务完成信号
+	taskFailed   chan struct{} // 任务失败信号
 
 	// 接收到的音频数据
 	audioBuffer []byte
 	audioMu     sync.Mutex
 }
 
-// newSession 创建新的合成会话（建立 WebSocket 连接 + 发送 run-task）
+// newSession 创建新的合成会话（建立 WebSocket 连接）
 func (c *internalClient) newSession(ctx context.Context, params wsParams) (*synthesisSession, error) {
 	// 1. 建立 WebSocket 连接
 	conn, err := c.connectWebSocket(ctx)
@@ -269,19 +278,12 @@ func (c *internalClient) newSession(ctx context.Context, params wsParams) (*synt
 	taskID := uuid.New().String()
 
 	session := &synthesisSession{
-		conn:        conn,
-		taskID:      taskID,
-		taskStarted: make(chan struct{}),
+		conn:         conn,
+		taskID:       taskID,
+		taskStarted:  make(chan struct{}),
+		taskFinished: make(chan struct{}),
+		taskFailed:   make(chan struct{}),
 	}
-
-	// 3. 发送 run-task 指令
-	if err := session.sendRunTask(ctx, c.model, params); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("send run-task failed: %w", err)
-	}
-
-	// 4. 启动后台接收消息 goroutine（用于 task-started 事件检测）
-	go session.receiveLoop(ctx)
 
 	return session, nil
 }
@@ -342,9 +344,7 @@ func (s *synthesisSession) sendRunTask(ctx context.Context, model string, params
 		return ctx.Err()
 	default:
 	}
-	s.mu.Lock()
 	err = s.conn.WriteMessage(websocket.TextMessage, data)
-	s.mu.Unlock()
 
 	if err != nil {
 		return fmt.Errorf("send run-task failed: %w", err)
@@ -360,7 +360,7 @@ func (s *synthesisSession) sendRunTask(ctx context.Context, model string, params
 }
 
 // sendContinueTask 发送 continue-task 指令（推送文本）
-func (s *synthesisSession) sendContinueTask(text string) error {
+func (s *synthesisSession) sendContinueTask(ctx context.Context, text string) error {
 	event := wsEvent{
 		Header: wsHeader{
 			Action:    actionContinueTask,
@@ -377,15 +377,18 @@ func (s *synthesisSession) sendContinueTask(text string) error {
 		return fmt.Errorf("marshal continue-task failed: %w", err)
 	}
 
-	s.mu.Lock()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	err = s.conn.WriteMessage(websocket.TextMessage, data)
-	s.mu.Unlock()
 
 	if err != nil {
 		return fmt.Errorf("send continue-task failed: %w", err)
 	}
 
-	logger.Debug("[AliyunTTS] Sent continue-task",
+	logger.DebugContext(ctx, "[AliyunTTS] Sent continue-task",
 		"task_id", s.taskID,
 		"text_len", len(text),
 	)
@@ -393,7 +396,7 @@ func (s *synthesisSession) sendContinueTask(text string) error {
 }
 
 // sendFinishTask 发送 finish-task 指令
-func (s *synthesisSession) sendFinishTask() error {
+func (s *synthesisSession) sendFinishTask(ctx context.Context) error {
 	event := wsEvent{
 		Header: wsHeader{
 			Action:    actionFinishTask,
@@ -410,15 +413,18 @@ func (s *synthesisSession) sendFinishTask() error {
 		return fmt.Errorf("marshal finish-task failed: %w", err)
 	}
 
-	s.mu.Lock()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	err = s.conn.WriteMessage(websocket.TextMessage, data)
-	s.mu.Unlock()
 
 	if err != nil {
 		return fmt.Errorf("send finish-task failed: %w", err)
 	}
 
-	logger.Debug("[AliyunTTS] Sent finish-task", "task_id", s.taskID)
+	logger.DebugContext(ctx, "[AliyunTTS] Sent finish-task", "task_id", s.taskID)
 	return nil
 }
 
@@ -427,7 +433,6 @@ func (s *synthesisSession) sendFinishTask() error {
 // receiveLoop 持续接收 WebSocket 消息
 // 处理二进制音频块和文本事件
 func (s *synthesisSession) receiveLoop(ctx context.Context) {
-	taskStartedNotified := false
 
 	for {
 		select {
@@ -458,7 +463,7 @@ func (s *synthesisSession) receiveLoop(ctx context.Context) {
 			s.audioBuffer = append(s.audioBuffer, message...)
 			s.audioMu.Unlock()
 
-			logger.Debug("[AliyunTTS] Received audio chunk",
+			logger.DebugContext(ctx, "[AliyunTTS] Received audio chunk",
 				"bytes", len(message),
 				"task_id", s.taskID,
 			)
@@ -477,26 +482,24 @@ func (s *synthesisSession) receiveLoop(ctx context.Context) {
 
 		switch event.Header.Event {
 		case eventTaskStarted:
-			logger.Info("[AliyunTTS] Task started", "task_id", s.taskID)
-			if !taskStartedNotified {
-				close(s.taskStarted)
-				taskStartedNotified = true
-			}
+			logger.InfoContext(ctx, "[AliyunTTS] Task started", "task_id", s.taskID)
+			close(s.taskStarted)
 
 		case eventResultGenerated:
-			logger.Debug("[AliyunTTS] Result generated",
+			logger.DebugContext(ctx, "[AliyunTTS] Result generated",
 				"task_id", s.taskID,
 			)
+
+		case eventTaskFinished:
+			logger.InfoContext(ctx, "[AliyunTTS] Task finished", "task_id", s.taskID)
 			if event.Payload.Usage != nil {
-				logger.Debug("[AliyunTTS] Usage info",
+				logger.DebugContext(ctx, "[AliyunTTS] Usage info",
 					"characters", event.Payload.Usage.Characters,
 					"duration", event.Payload.Usage.Duration,
 					"task_id", s.taskID,
 				)
 			}
-
-		case eventTaskFinished:
-			logger.Info("[AliyunTTS] Task finished", "task_id", s.taskID)
+			close(s.taskFinished)
 			return
 
 		case eventTaskFailed:
@@ -504,20 +507,16 @@ func (s *synthesisSession) receiveLoop(ctx context.Context) {
 			if errMsg == "" {
 				errMsg = "unknown error"
 			}
-			logger.Error("[AliyunTTS] Task failed",
+			logger.ErrorContext(ctx, "[AliyunTTS] Task failed",
 				"error_code", event.Header.ErrorCode,
 				"error_message", errMsg,
 				"task_id", s.taskID,
 			)
-			// 如果 task-started 还没通知，也要释放等待方
-			if !taskStartedNotified {
-				close(s.taskStarted)
-				taskStartedNotified = true
-			}
+			close(s.taskFailed)
 			return
 
 		default:
-			logger.Warn("[AliyunTTS] Unknown event",
+			logger.WarnContext(ctx, "[AliyunTTS] Unknown event",
 				"event", event.Header.Event,
 				"task_id", s.taskID,
 			)
@@ -537,42 +536,30 @@ func (s *synthesisSession) waitTaskStarted(ctx context.Context) error {
 			defaultTaskStartTimeout, s.taskID)
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-s.taskFailed:
+		return fmt.Errorf("task failed before started, task_id=%s", s.taskID)
 	}
 }
 
 // waitAndCollect 等待所有音频接收完成，返回完整音频数据
 func (s *synthesisSession) waitAndCollect(ctx context.Context) ([]byte, error) {
-	// receiveLoop 会在 task-finished / task-failed 时退出
-	// 我们通过定时检查 conn 的状态来判断是否完成
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
-
-	deadline := time.After(defaultTaskFinishTimeout)
-	for {
-		select {
-		case <-deadline:
-			return nil, fmt.Errorf("wait task-finished timeout after %v, task_id=%s",
-				defaultTaskFinishTimeout, s.taskID)
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-ticker.C:
-			// 检查 receiveLoop 是否已经退出（通过尝试读取已缓存的数据判断）
-			// 简单方案：等一小段时间后尝试 ping，如果连接已关闭说明完成
-		}
-
-		// 尝试 ping 来检测连接是否仍存活
-		s.mu.Lock()
-		err := s.conn.WriteMessage(websocket.PingMessage, nil)
-		s.mu.Unlock()
-
-		if err != nil {
-			// 连接已关闭 = receiveLoop 已结束（task-finished/task-failed）
-			s.audioMu.Lock()
-			data := make([]byte, len(s.audioBuffer))
-			copy(data, s.audioBuffer)
-			s.audioMu.Unlock()
-			return data, nil
-		}
+	// 等待 task-finished 或 task-failed 事件
+	select {
+	case <-s.taskFinished:
+		// 任务正常完成，返回音频数据
+		s.audioMu.Lock()
+		data := make([]byte, len(s.audioBuffer))
+		copy(data, s.audioBuffer)
+		s.audioMu.Unlock()
+		logger.DebugContext(ctx, "[AliyunTTS] Collected audio data",
+			"bytes", len(data),
+			"task_id", s.taskID,
+		)
+		return data, nil
+	case <-s.taskFailed:
+		return nil, fmt.Errorf("task failed, task_id=%s", s.taskID)
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
