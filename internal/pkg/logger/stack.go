@@ -10,42 +10,39 @@ import (
 // skip: 跳过的帧数（用于跳过 logger 内部调用）
 // maxFrames: 最多捕获的帧数
 // 返回格式化的调用栈字符串
-func captureStack(skip, maxFrames int) string {
-	pcs := make([]uintptr, maxFrames+skip)
+func captureStack(skip, max int) string {
+	pcs := make([]uintptr, max)
 	n := runtime.Callers(skip, pcs)
-	if n == 0 {
-		return ""
-	}
 
 	frames := runtime.CallersFrames(pcs[:n])
-	var buf strings.Builder
-	count := 0
+	var sb strings.Builder
 
+	level := 0
 	for {
 		frame, more := frames.Next()
-
-		// 跳过 runtime、slog 和 logger 内部的帧
-		if isInternalFrame(frame.Function) {
-			if !more {
-				break
-			}
-			continue
-		}
-
-		// 格式化输出：函数名 + 文件:行号
-		funcName := shortFuncName(frame.Function)
-		buf.WriteString(fmt.Sprintf("  %s\n    %s:%d\n", funcName, frame.File, frame.Line))
-
-		count++
-		if count >= maxFrames {
-			break
-		}
 		if !more {
 			break
 		}
+
+		// 过滤 gin / runtime
+		if strings.Contains(frame.File, "/gin-gonic/") {
+			continue
+		}
+		if strings.Contains(frame.File, "/runtime/") {
+			continue
+		}
+
+		sb.WriteString(fmt.Sprintf(
+			"[%d] %s\n    %s:%d\n",
+			level,
+			frame.Function,
+			frame.File,
+			frame.Line,
+		))
+		level++
 	}
 
-	return strings.TrimRight(buf.String(), "\n")
+	return sb.String()
 }
 
 // isInternalFrame 判断是否为内部帧（应跳过的帧）

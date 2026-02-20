@@ -2,11 +2,12 @@ package logger
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"runtime"
-	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -53,14 +54,13 @@ func (h *MultiHandler) Handle(ctx context.Context, record slog.Record) error {
 		r.AddAttrs(slog.String("trace_id", traceID))
 	}
 
-	if r.PC != 0 {
-		frames := runtime.CallersFrames([]uintptr{r.PC})
-		if frame, _ := frames.Next(); frame.File != "" && frame.Line > 0 {
-			r.AddAttrs(
-				slog.String("file", frame.File+":"+strconv.Itoa(frame.Line)),
-			)
-
-		}
+	if frame := findCallerFrame(); frame != nil {
+		r.AddAttrs(
+			slog.String(
+				"file",
+				fmt.Sprintf("%s:%d", frame.File, frame.Line),
+			),
+		)
 	}
 
 	// Error 级别自动添加调用栈信息
@@ -206,4 +206,33 @@ func colorize(line, level, color string) string {
 		}
 	}
 	return line
+}
+func findCallerFrame() *runtime.Frame {
+	const maxDepth = 15
+	pcs := make([]uintptr, maxDepth)
+	n := runtime.Callers(4, pcs) // 4 是经验值：跳过 runtime + slog + logger 包
+
+	frames := runtime.CallersFrames(pcs[:n])
+
+	for {
+		frame, more := frames.Next()
+		if !more {
+			break
+		}
+
+		// 过滤 logger / slog / runtime 内部
+		if strings.Contains(frame.File, "/internal/pkg/logger") {
+			continue
+		}
+		if strings.Contains(frame.File, "/log/slog") {
+			continue
+		}
+		if strings.Contains(frame.File, "/runtime/") {
+			continue
+		}
+
+		return &frame
+	}
+
+	return nil
 }
