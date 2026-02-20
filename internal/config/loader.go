@@ -49,7 +49,6 @@ func Load() (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
-	fmt.Println("cfg:", cfg)
 	return &cfg, nil
 }
 
