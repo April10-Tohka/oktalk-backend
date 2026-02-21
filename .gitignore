@@ -56,3 +56,6 @@ coverage.txt
 internal/config/env/dev.yaml
 internal/config/env/prod.yaml
 internal/config/env/test.yaml
+
+# Test files
+*_test.go
