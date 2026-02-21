@@ -3,12 +3,12 @@ package xf
 import (
 	"context"
 	"fmt"
-
 	"pronunciation-correction-system/internal/config"
 	"pronunciation-correction-system/internal/domain"
+	"pronunciation-correction-system/internal/pkg/logger"
 )
 
-// XFSpeechAdapter 科大讯飞语音评测适配器
+// XFEvaluationAdapter 科大讯飞语音评测适配器
 // 实现 domain.EvaluationProvider 接口
 type XFEvaluationAdapter struct {
 	client *internalClient
@@ -26,29 +26,34 @@ func NewXFEvaluationAdapter(cfg config.XunFeiConfig) *XFEvaluationAdapter {
 
 // Assess 执行语音评测
 func (a *XFEvaluationAdapter) Assess(ctx context.Context, text string, audioData []byte) (*domain.EvaluationResult, error) {
+	logger.InfoContext(ctx, "xf evaluation: starting assess",
+		"text_length", len(text),
+		"audio_bytes", len(audioData))
+
 	req := &speechAssessRequest{
 		Text:      text,
 		AudioData: audioData,
 		Category:  "read_sentence",
-		Language:  "en_us",
+		Language:  "en_vip",
 	}
 
-	resp, err := a.client.speechAssess(ctx, req)
+	result, err := a.client.speechAssess(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("xf speech assess failed: %w", err)
 	}
 
-	if resp.ErrorCode != 0 {
-		return nil, fmt.Errorf("xf speech assess error: code=%d, message=%s",
-			resp.ErrorCode, resp.ErrorMessage)
-	}
-
-	if resp.Result == nil {
+	if result == nil {
 		return nil, fmt.Errorf("xf speech assess returned nil result")
 	}
 
+	logger.InfoContext(ctx, "xf evaluation: assess completed",
+		"total_score", result.TotalScore,
+		"accuracy", result.Accuracy,
+		"fluency", result.Fluency,
+		"word_count", len(result.Words))
+
 	// 将内部 SDK 结果转换为领域层结果
-	return convertToResult(resp.Result), nil
+	return convertToResult(result), nil
 }
 
 // Close 关闭客户端
