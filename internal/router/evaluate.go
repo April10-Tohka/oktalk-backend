@@ -8,19 +8,22 @@ import (
 )
 
 // setupEvaluateRoutes 注册 AI 发音纠正路由（需认证）
-// E-0 ~ E-6
 func setupEvaluateRoutes(rg *gin.RouterGroup, h *handler.EvaluateHandler) {
 	eval := rg.Group("/evaluate")
 	{
-		// ── 静态路径（优先匹配）──
-		eval.POST("/MVP", h.EvaluateMVP)                          // E-0
-		eval.POST("/submit", h.SubmitEvaluation)                  // E-1
-		eval.GET("/history", h.GetEvaluationHistory)              // E-3
-		eval.GET("/reference-audio/:text_id", h.GetReferenceAudio) // E-6
-
-		// ── 参数路径 ──
-		eval.GET("/result/:eval_id", h.GetEvaluationResult)       // E-2
-		eval.GET("/:eval_id/detail", h.GetEvaluationDetail)       // E-4
-		eval.DELETE("/:eval_id", h.DeleteEvaluation)              // E-5
+		// 同步发音评测
+		eval.POST("/MVP", h.EvaluateMVP)
+		// 提交发音评测请求
+		eval.POST("/submit", h.SubmitEvaluation)
+		// 查询发音评测处理结果
+		eval.GET("/result/:eval_id", h.GetEvaluationResult)
+		// 获取当前用户的评测历史列表
+		eval.GET("/history", h.GetEvaluationHistory)
+		// 获取某次评测的完整详情
+		eval.GET("/:eval_id/detail", h.GetEvaluationDetail)
+		// 删除指定发音评测记录
+		eval.DELETE("/:eval_id", h.DeleteEvaluation)
+		// 获取指定文本的标准发音音频
+		eval.GET("/reference-audio/:text_id", h.GetReferenceAudio)
 	}
 }

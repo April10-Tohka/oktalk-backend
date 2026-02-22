@@ -8,16 +8,22 @@ import (
 )
 
 // setupChatRoutes 注册 AI 语音对话路由（需认证）
-// C-0 ~ C-6
 func setupChatRoutes(rg *gin.RouterGroup, h *handler.ChatHandler) {
 	chat := rg.Group("/chat")
 	{
-		chat.POST("/MVP", h.ChatMVP)                          // C-0
-		chat.POST("/submit", h.SubmitChat)                    // C-1
-		chat.GET("/result/:task_id", h.GetChatResult)         // C-2
-		chat.GET("/history/:session_id", h.GetChatHistory)    // C-3
-		chat.DELETE("/session/:session_id", h.DeleteSession)  // C-4
-		chat.GET("/sessions", h.GetSessions)                  // C-5
-		chat.POST("/feedback", h.SubmitChatFeedback)          // C-6
+		// 同步语音对话
+		chat.POST("/MVP", h.ChatMVP)
+		//
+		// 提交语音对话请求
+		chat.POST("/submit", h.SubmitChat)
+		// 查询语音对话处理结果
+		chat.GET("/result/:task_id", h.GetChatResult)
+		//获取指定会话的对话历史记录
+		chat.GET("/history/:session_id", h.GetChatHistory)
+		// 删除指定会话及其所有对话记录
+		chat.DELETE("/session/:session_id", h.DeleteSession)
+		// 获取当前用户的所有会话列表
+		chat.GET("/sessions", h.GetSessions)
+		chat.POST("/feedback", h.SubmitChatFeedback)
 	}
 }
