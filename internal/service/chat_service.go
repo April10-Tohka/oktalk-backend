@@ -56,7 +56,22 @@ type SubmitFeedbackRequest struct {
 	UserID    string
 }
 
+type StartSessionRequest struct {
+	ConversationType string
+	DifficultyLevel  string
+	Topic            string
+	UserID           string
+}
+
 // ===== 响应结构 =====
+
+type StartSessionResponse struct {
+	ConversationID   string `json:"conversation_id"`
+	ConversationType string `json:"conversation_type"`
+	DifficultyLevel  string `json:"difficulty_level"`
+	Topic            string `json:"topic"`
+	Status           string `json:"status"`
+}
 
 // ChatResultResponse 语音对话处理结果
 type ChatResultResponse struct {
@@ -109,6 +124,8 @@ type ChatService interface {
 	// ChatMVP 同步语音对话 MVP（ASR → LLM → TTS）
 	ChatMVP(ctx context.Context, req *ChatMVPRequest) ([]byte, error)
 
+	StartSession(ctx context.Context, req *StartSessionRequest) (*StartSessionResponse, error)
+
 	// SubmitChat 提交异步语音对话任务
 	SubmitChat(ctx context.Context, req *SubmitChatRequest) (taskID string, err error)
 
@@ -159,6 +176,61 @@ func NewChatService(repos *db.Repositories, asr domain.ASRProvider, llm domain.L
 		ossProvider:      oss,
 		logger:           logger,
 	}
+}
+
+func (s *chatServiceImpl) StartSession(ctx context.Context, req *StartSessionRequest) (*StartSessionResponse, error) {
+	if req == nil {
+		err := errors.New("start session request is nil")
+		logger.ErrorContext(ctx, "start session request invalid", "error", err)
+		return nil, err
+	}
+	if req.UserID == "" {
+		err := errors.New("user id is empty")
+		logger.ErrorContext(ctx, "start session user id missing", "error", err)
+		return nil, err
+	}
+	if s.conversationRepo == nil {
+		err := errors.New("conversation repository not initialized")
+		logger.ErrorContext(ctx, "start session repository missing", "error", err)
+		return nil, err
+	}
+
+	conversationType := strings.TrimSpace(req.ConversationType)
+	if conversationType == "" {
+		conversationType = "free_talk"
+	}
+	difficultyLevel := strings.TrimSpace(req.DifficultyLevel)
+	if difficultyLevel == "" {
+		difficultyLevel = "beginner"
+	}
+	topic := strings.TrimSpace(req.Topic)
+	if topic == "" {
+		topic = "General"
+	}
+
+	conversationID := uuid.New()
+	conversation := &model.VoiceConversation{
+		ID:               conversationID,
+		UserID:           req.UserID,
+		Topic:            topic,
+		DifficultyLevel:  difficultyLevel,
+		ConversationType: conversationType,
+		MessageCount:     0,
+		DurationSeconds:  0,
+		Status:           "active",
+	}
+	if err := s.conversationRepo.Create(ctx, conversation); err != nil {
+		logger.ErrorContext(ctx, "start session create conversation failed", "error", err)
+		return nil, err
+	}
+
+	return &StartSessionResponse{
+		ConversationID:   conversationID,
+		ConversationType: conversationType,
+		DifficultyLevel:  difficultyLevel,
+		Topic:            topic,
+		Status:           "active",
+	}, nil
 }
 
 func (s *chatServiceImpl) ChatMVP(ctx context.Context, req *ChatMVPRequest) ([]byte, error) {

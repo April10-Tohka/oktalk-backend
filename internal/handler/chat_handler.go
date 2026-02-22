@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"time"
 
@@ -29,20 +30,24 @@ func NewChatHandler(chatService service.ChatService) *ChatHandler {
 // 同步语音对话 MVP（ASR + LLM + TTS，返回音频流）
 func (h *ChatHandler) ChatMVP(c *gin.Context) {
 	// 步骤 1：解析 multipart/form-data
-	fileHeader, err := c.FormFile("audio_file")
-	if err != nil {
-		logger.ErrorContext(c.Request.Context(), "chat mvp missing audio_file", "error", err)
-		BadRequest(c, "audio_file is required")
+	type chatMVPForm struct {
+		ConversationID   string                `form:"conversation_id" binding:"required"`
+		AudioType        string                `form:"audio_type" binding:"required"`
+		ConversationType string                `form:"conversation_type"`
+		DifficultyLevel  string                `form:"difficulty_level"`
+		AudioFile        *multipart.FileHeader `form:"audio_file" binding:"required"`
+	}
+	var form chatMVPForm
+	if err := c.ShouldBind(&form); err != nil {
+		logger.ErrorContext(c.Request.Context(), "chat mvp bind form failed", "error", err)
+		BadRequest(c, "invalid request body: "+err.Error())
 		return
 	}
-	audioType := c.PostForm("audio_type")
-	if audioType == "" {
-		logger.ErrorContext(c.Request.Context(), "chat mvp missing audio_type", "error", errors.New("audio_type is required"))
-		BadRequest(c, "audio_type is required")
-		return
-	}
-	conversationType := c.PostForm("conversation_type")
-	difficultyLevel := c.PostForm("difficulty_level")
+	_ = form.ConversationID
+	fileHeader := form.AudioFile
+	audioType := form.AudioType
+	conversationType := form.ConversationType
+	difficultyLevel := form.DifficultyLevel
 
 	// 步骤 2：读取音频数据
 	file, err := fileHeader.Open()
@@ -89,6 +94,37 @@ func (h *ChatHandler) ChatMVP(c *gin.Context) {
 
 	// 步骤 6：返回音频流
 	c.Data(http.StatusOK, "audio/mpeg", audioReply)
+}
+
+func (h *ChatHandler) StartSession(c *gin.Context) {
+	var reqBody struct {
+		ConversationType string `json:"conversation_type"`
+		DifficultyLevel  string `json:"difficulty_level"`
+		Topic            string `json:"topic"`
+	}
+	if err := c.ShouldBindJSON(&reqBody); err != nil && err != io.EOF {
+		BadRequest(c, "invalid request body: "+err.Error())
+		return
+	}
+
+	userID, exists := c.Get(string(middleware.UserIDKey))
+	if !exists {
+		Unauthorized(c)
+		return
+	}
+
+	result, err := h.chatService.StartSession(c.Request.Context(), &service.StartSessionRequest{
+		ConversationType: reqBody.ConversationType,
+		DifficultyLevel:  reqBody.DifficultyLevel,
+		Topic:            reqBody.Topic,
+		UserID:           userID.(string),
+	})
+	if err != nil {
+		InternalError(c, err.Error())
+		return
+	}
+
+	OK(c, result)
 }
 
 // SubmitChat POST /api/v1/chat/submit

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
@@ -30,27 +31,30 @@ func NewEvaluateHandler(evaluateService service.EvaluateService) *EvaluateHandle
 // 同步发音评测 MVP（讯飞评测 → LLM 分级反馈 → TTS 合成）
 func (h *EvaluateHandler) EvaluateMVP(c *gin.Context) {
 	// 步骤 1：解析 multipart/form-data
-	fileHeader, err := c.FormFile("audio_file")
-	if err != nil {
-		logger.ErrorContext(c.Request.Context(), "evaluate mvp missing audio_file", "error", err)
-		BadRequest(c, "audio_file is required")
+	type evaluateMVPForm struct {
+		AudioFile       *multipart.FileHeader `form:"audio_file" binding:"required"`
+		AudioType       string                `form:"audio_type"`
+		TextID          string                `form:"text_id" binding:"required"`
+		Category        string                `form:"category"`
+		DifficultyLevel string                `form:"difficulty_level"`
+	}
+	var form evaluateMVPForm
+	if err := c.ShouldBind(&form); err != nil {
+		logger.ErrorContext(c.Request.Context(), "evaluate mvp bind form failed", "error", err)
+		BadRequest(c, "invalid request body: "+err.Error())
 		return
 	}
-	audioType := strings.ToLower(strings.TrimSpace(c.PostForm("audio_type")))
+	fileHeader := form.AudioFile
+	audioType := strings.ToLower(strings.TrimSpace(form.AudioType))
 	if audioType == "" {
 		audioType = "wav"
 	}
-	textID := strings.TrimSpace(c.PostForm("text_id"))
-	if textID == "" {
-		logger.ErrorContext(c.Request.Context(), "evaluate mvp missing text_id", "error", errors.New("text_id is required"))
-		BadRequest(c, "text_id is required")
-		return
-	}
-	category := strings.TrimSpace(c.PostForm("category"))
+	textID := strings.TrimSpace(form.TextID)
+	category := strings.TrimSpace(form.Category)
 	if category == "" {
 		category = "read_sentence"
 	}
-	difficultyLevel := strings.TrimSpace(c.PostForm("difficulty_level"))
+	difficultyLevel := strings.TrimSpace(form.DifficultyLevel)
 	if difficultyLevel == "" {
 		difficultyLevel = "beginner"
 	}
