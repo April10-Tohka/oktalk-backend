@@ -5,13 +5,14 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+
 	"path/filepath"
 	"strings"
 	"time"
 
 	"pronunciation-correction-system/internal/config"
 	"pronunciation-correction-system/internal/domain"
+	"pronunciation-correction-system/internal/pkg/logger"
 )
 
 // AliyunOSSAdapter 阿里云 OSS 适配器
@@ -48,14 +49,14 @@ func (a *AliyunOSSAdapter) UploadFile(ctx context.Context, objectKey string, rea
 
 	// 上传到 OSS
 	if err := a.client.putObject(ctx, objectKey, reader, contentType); err != nil {
-		log.Printf("[AliyunOSS] Upload failed: key=%s, error=%v", objectKey, err)
+		logger.ErrorContext(ctx, "upload file failed", "key", objectKey, "error", err)
 		return "", fmt.Errorf("upload file failed: %w", err)
 	}
 
 	// 获取访问 URL
 	url := a.client.getObjectURL(objectKey)
 
-	log.Printf("[AliyunOSS] File uploaded: key=%s, url=%s", objectKey, url)
+	logger.InfoContext(ctx, "file uploaded", "key", objectKey, "url", url)
 	return url, nil
 }
 
@@ -96,11 +97,11 @@ func (a *AliyunOSSAdapter) GetPublicURL(objectKey string) string {
 func (a *AliyunOSSAdapter) GetSignedURL(ctx context.Context, objectKey string, expireSeconds int64) (string, error) {
 	url, err := a.client.getSignedURL(ctx, objectKey, expireSeconds)
 	if err != nil {
-		log.Printf("[AliyunOSS] Get signed URL failed: key=%s, error=%v", objectKey, err)
+		logger.ErrorContext(ctx, "get signed url failed", "key", objectKey, "error", err)
 		return "", fmt.Errorf("get signed url failed: %w", err)
 	}
 
-	log.Printf("[AliyunOSS] Signed URL generated: key=%s, expires=%ds", objectKey, expireSeconds)
+	logger.InfoContext(ctx, "signed url generated", "key", objectKey, "expires", expireSeconds)
 	return url, nil
 }
 
@@ -110,11 +111,11 @@ func (a *AliyunOSSAdapter) GetSignedURL(ctx context.Context, objectKey string, e
 // 实现 domain.OSSProvider.DeleteFile
 func (a *AliyunOSSAdapter) DeleteFile(ctx context.Context, objectKey string) error {
 	if err := a.client.deleteObject(ctx, objectKey); err != nil {
-		log.Printf("[AliyunOSS] Delete failed: key=%s, error=%v", objectKey, err)
+		logger.ErrorContext(ctx, "delete file failed", "key", objectKey, "error", err)
 		return fmt.Errorf("delete file failed: %w", err)
 	}
 
-	log.Printf("[AliyunOSS] File deleted: key=%s", objectKey)
+	logger.InfoContext(ctx, "file deleted", "key", objectKey)
 	return nil
 }
 
@@ -126,11 +127,11 @@ func (a *AliyunOSSAdapter) DeleteFiles(ctx context.Context, objectKeys []string)
 	}
 
 	if err := a.client.deleteMultipleObjects(ctx, objectKeys); err != nil {
-		log.Printf("[AliyunOSS] Batch delete failed: count=%d, error=%v", len(objectKeys), err)
+		logger.ErrorContext(ctx, "batch delete files failed", "count", len(objectKeys), "error", err)
 		return fmt.Errorf("batch delete files failed: %w", err)
 	}
 
-	log.Printf("[AliyunOSS] Files batch deleted: count=%d", len(objectKeys))
+	logger.InfoContext(ctx, "files batch deleted", "count", len(objectKeys))
 	return nil
 }
 
@@ -141,7 +142,7 @@ func (a *AliyunOSSAdapter) DeleteFiles(ctx context.Context, objectKeys []string)
 func (a *AliyunOSSAdapter) FileExists(ctx context.Context, objectKey string) (bool, error) {
 	exists, err := a.client.isObjectExist(ctx, objectKey)
 	if err != nil {
-		log.Printf("[AliyunOSS] Check file exists failed: key=%s, error=%v", objectKey, err)
+		logger.ErrorContext(ctx, "check file exists failed", "key", objectKey, "error", err)
 		return false, fmt.Errorf("check file exists failed: %w", err)
 	}
 	return exists, nil
@@ -156,7 +157,7 @@ func (a *AliyunOSSAdapter) GetFileInfo(ctx context.Context, objectKey string) (*
 		if isNotFoundError(err) {
 			return nil, fmt.Errorf("file not found: %s", objectKey)
 		}
-		log.Printf("[AliyunOSS] Get file info failed: key=%s, error=%v", objectKey, err)
+		logger.ErrorContext(ctx, "get file info failed", "key", objectKey, "error", err)
 		return nil, fmt.Errorf("get file info failed: %w", err)
 	}
 
@@ -178,6 +179,7 @@ func (a *AliyunOSSAdapter) GetFileInfo(ctx context.Context, objectKey string) (*
 		info.LastModified = time.Time{}
 	}
 
+	logger.InfoContext(ctx, "file info retrieved", "key", objectKey, "size", info.Size, "contentType", info.ContentType, "etag", info.ETag, "lastModified", info.LastModified)
 	return info, nil
 }
 
