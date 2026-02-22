@@ -27,6 +27,7 @@ type VoiceConversationRepository interface {
 	Count(ctx context.Context) (int64, error)
 	CountByUserID(ctx context.Context, userID string) (int64, error)
 	CountByUserIDAndDateRange(ctx context.Context, userID string, start, end time.Time) (int64, error)
+	GetStatsByUserAndDateRange(ctx context.Context, userID string, start, end time.Time) (*ConversationStats, error)
 
 	// 更新方法
 	UpdateStatus(ctx context.Context, id, status string) error
@@ -255,4 +256,37 @@ func (r *voiceConversationRepository) GetWithMessages(ctx context.Context, id st
 		return nil, WrapDBError(err, "get voice conversation with messages")
 	}
 	return &conversation, nil
+}
+
+// ConversationStats 对话统计结果
+type ConversationStats struct {
+	TotalCount           int
+	TotalDurationSeconds int
+	ActiveDays           int
+}
+
+// GetStatsByUserAndDateRange 获取用户在指定时间范围内的对话统计（报告用）
+func (r *voiceConversationRepository) GetStatsByUserAndDateRange(ctx context.Context, userID string, start, end time.Time) (*ConversationStats, error) {
+	var result struct {
+		TotalCount           int `gorm:"column:total_count"`
+		TotalDurationSeconds int `gorm:"column:total_duration_seconds"`
+		ActiveDays           int `gorm:"column:active_days"`
+	}
+	err := r.db.WithContext(ctx).
+		Model(&model.VoiceConversation{}).
+		Where("user_id = ? AND created_at >= ? AND created_at < ? AND deleted_at IS NULL", userID, start, end).
+		Select(
+			"COUNT(*) as total_count, " +
+				"COALESCE(SUM(duration_seconds), 0) as total_duration_seconds, " +
+				"COUNT(DISTINCT DATE(created_at)) as active_days",
+		).
+		Scan(&result).Error
+	if err != nil {
+		return nil, WrapDBError(err, "get conversation stats by date range")
+	}
+	return &ConversationStats{
+		TotalCount:           result.TotalCount,
+		TotalDurationSeconds: result.TotalDurationSeconds,
+		ActiveDays:           result.ActiveDays,
+	}, nil
 }

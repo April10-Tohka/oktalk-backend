@@ -3,6 +3,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"gorm.io/gorm"
@@ -31,6 +32,7 @@ type PronunciationEvaluationRepository interface {
 	CountByFeedbackLevel(ctx context.Context, userID, level string) (int64, error)
 	GetAverageScoreByUserID(ctx context.Context, userID string) (float64, error)
 	GetAverageScoreByUserIDAndDateRange(ctx context.Context, userID string, start, end time.Time) (float64, error)
+	GetStatsByUserAndDateRange(ctx context.Context, userID string, start, end time.Time) (*EvaluationStats, error)
 
 	// 更新方法
 	UpdateStatus(ctx context.Context, id, status string) error
@@ -343,4 +345,87 @@ func (r *pronunciationEvaluationRepository) GetWithUser(ctx context.Context, id 
 		return nil, WrapDBError(err, "get pronunciation evaluation with user")
 	}
 	return &evaluation, nil
+}
+
+// EvaluationStats 评测统计结果
+type EvaluationStats struct {
+	TotalCount        int
+	AvgOverallScore   float64
+	AvgAccuracyScore  float64
+	AvgFluencyScore   float64
+	AvgIntegrityScore float64
+	SLevelCount       int
+	ALevelCount       int
+	BLevelCount       int
+	CLevelCount       int
+	ProblemWords      map[string]int // word -> frequency
+}
+
+// GetStatsByUserAndDateRange 获取用户在指定时间范围内的评测统计（报告用）
+func (r *pronunciationEvaluationRepository) GetStatsByUserAndDateRange(ctx context.Context, userID string, start, end time.Time) (*EvaluationStats, error) {
+	stats := &EvaluationStats{ProblemWords: make(map[string]int)}
+
+	// 1. 聚合查询：总数、平均分、级别分布
+	var result struct {
+		TotalCount        int     `gorm:"column:total_count"`
+		AvgOverallScore   float64 `gorm:"column:avg_overall"`
+		AvgAccuracyScore  float64 `gorm:"column:avg_accuracy"`
+		AvgFluencyScore   float64 `gorm:"column:avg_fluency"`
+		AvgIntegrityScore float64 `gorm:"column:avg_integrity"`
+		SLevelCount       int     `gorm:"column:s_count"`
+		ALevelCount       int     `gorm:"column:a_count"`
+		BLevelCount       int     `gorm:"column:b_count"`
+		CLevelCount       int     `gorm:"column:c_count"`
+	}
+	err := r.db.WithContext(ctx).
+		Model(&model.PronunciationEvaluation{}).
+		Where("user_id = ? AND status = ? AND created_at >= ? AND created_at < ?", userID, model.EvaluationStatusCompleted, start, end).
+		Select(
+			"COUNT(*) as total_count, " +
+				"COALESCE(AVG(overall_score), 0) as avg_overall, " +
+				"COALESCE(AVG(accuracy_score), 0) as avg_accuracy, " +
+				"COALESCE(AVG(fluency_score), 0) as avg_fluency, " +
+				"COALESCE(AVG(integrity_score), 0) as avg_integrity, " +
+				"SUM(CASE WHEN feedback_level = 'S' THEN 1 ELSE 0 END) as s_count, " +
+				"SUM(CASE WHEN feedback_level = 'A' THEN 1 ELSE 0 END) as a_count, " +
+				"SUM(CASE WHEN feedback_level = 'B' THEN 1 ELSE 0 END) as b_count, " +
+				"SUM(CASE WHEN feedback_level = 'C' THEN 1 ELSE 0 END) as c_count",
+		).
+		Scan(&result).Error
+	if err != nil {
+		return nil, WrapDBError(err, "get evaluation stats by date range")
+	}
+
+	stats.TotalCount = result.TotalCount
+	stats.AvgOverallScore = result.AvgOverallScore
+	stats.AvgAccuracyScore = result.AvgAccuracyScore
+	stats.AvgFluencyScore = result.AvgFluencyScore
+	stats.AvgIntegrityScore = result.AvgIntegrityScore
+	stats.SLevelCount = result.SLevelCount
+	stats.ALevelCount = result.ALevelCount
+	stats.BLevelCount = result.BLevelCount
+	stats.CLevelCount = result.CLevelCount
+
+	// 2. 聚合问题单词（从 problem_words JSON 数组中提取）
+	var problemWordsRows []struct {
+		ProblemWords string `gorm:"column:problem_words"`
+	}
+	err = r.db.WithContext(ctx).
+		Model(&model.PronunciationEvaluation{}).
+		Where("user_id = ? AND status = ? AND created_at >= ? AND created_at < ? AND problem_words IS NOT NULL AND problem_words != '[]' AND problem_words != 'null'",
+			userID, model.EvaluationStatusCompleted, start, end).
+		Select("problem_words").
+		Scan(&problemWordsRows).Error
+	if err == nil {
+		for _, row := range problemWordsRows {
+			var words []string
+			if jsonErr := json.Unmarshal([]byte(row.ProblemWords), &words); jsonErr == nil {
+				for _, w := range words {
+					stats.ProblemWords[w]++
+				}
+			}
+		}
+	}
+
+	return stats, nil
 }

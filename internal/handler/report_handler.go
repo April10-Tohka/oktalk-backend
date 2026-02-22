@@ -4,6 +4,7 @@ package handler
 import (
 	"github.com/gin-gonic/gin"
 
+	"pronunciation-correction-system/internal/handler/middleware"
 	"pronunciation-correction-system/internal/service"
 )
 
@@ -20,13 +21,38 @@ func NewReportHandler(reportService service.ReportService) *ReportHandler {
 // ReportMVP POST /api/v1/report/MVP
 // 同步生成学习报告 MVP（统计 + LLM，直接返回报告内容）
 func (h *ReportHandler) ReportMVP(c *gin.Context) {
-	// TODO: Step2 实现
-	// 1. 解析 JSON 请求体: report_type, start_date, end_date
-	// 2. 从 Context 获取 user_id
-	// 3. 调用 h.reportService.ReportMVP(ctx, req)
-	// 4. 成功：OK(c, result)
-	// 5. 失败：InternalError(c, err.Error())
-	InternalError(c, "not implemented")
+	// 1. 解析请求体
+	var reqBody struct {
+		ReportType string `json:"report_type" binding:"required"`
+		StartDate  string `json:"start_date"`
+		EndDate    string `json:"end_date"`
+	}
+	if err := c.ShouldBindJSON(&reqBody); err != nil {
+		BadRequest(c, "invalid request body: "+err.Error())
+		return
+	}
+
+	// 2.从 Gin Context 获取 user_id
+	userID, exists := c.Get(string(middleware.UserIDKey))
+	if !exists {
+		Unauthorized(c)
+		return
+	}
+	req := service.ReportMVPRequest{
+		ReportType: reqBody.ReportType,
+		StartDate:  reqBody.StartDate,
+		EndDate:    reqBody.EndDate,
+		UserID:     userID.(string),
+	}
+
+	// 3. 调用 Service
+	result, err := h.reportService.ReportMVP(c.Request.Context(), &req)
+	if err != nil {
+		InternalError(c, err.Error())
+		return
+	}
+
+	OK(c, result)
 }
 
 // GenerateReport POST /api/v1/report/generate

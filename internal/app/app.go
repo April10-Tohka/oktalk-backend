@@ -188,7 +188,7 @@ func (a *App) initServices() {
 	a.UserService = service.NewUserService(appLogger)
 	a.ChatService = service.NewChatService(a.Repos, a.ASRProvider, a.LLMProvider, a.TTSProvider, a.OSSProvider, appLogger)
 	a.EvaluateService = service.NewEvaluateService(a.Repos, a.EvaluationProvider, a.LLMProvider, a.TTSProvider, a.OSSProvider, appLogger)
-	a.ReportService = service.NewReportService(appLogger)
+	a.ReportService = service.NewReportService(a.Repos, a.LLMProvider, a.TTSProvider, a.OSSProvider, appLogger)
 
 	log.Println("[App] Services initialized")
 }
