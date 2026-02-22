@@ -43,7 +43,7 @@ func (h *ChatHandler) ChatMVP(c *gin.Context) {
 		BadRequest(c, "invalid request body: "+err.Error())
 		return
 	}
-	_ = form.ConversationID
+	conversationID := form.ConversationID
 	fileHeader := form.AudioFile
 	audioType := form.AudioType
 	conversationType := form.ConversationType
@@ -85,6 +85,7 @@ func (h *ChatHandler) ChatMVP(c *gin.Context) {
 		ConversationType: conversationType,
 		DifficultyLevel:  difficultyLevel,
 		UserID:           userID.(string),
+		ConversationID:   conversationID,
 	})
 	if err != nil {
 		logger.ErrorContext(ctx, "chat mvp service failed", "error", err)

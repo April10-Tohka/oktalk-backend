@@ -24,6 +24,7 @@ type ChatMVPRequest struct {
 	ConversationType string // free_talk / question_answer
 	DifficultyLevel  string // beginner / intermediate / advanced
 	UserID           string
+	ConversationID   string
 }
 
 // SubmitChatRequest 异步语音对话提交请求
@@ -321,9 +322,8 @@ You: "Wonderful! I'm happy too! Why are you happy today?"
 		return nil, err
 	}
 	logger.InfoContext(ctx, "chat mvp tts audio generated", "audioSize", len(ttsAudio))
-	logger.InfoContext(ctx, "开始上传用户音频与 AI 音频到 OSS")
 	// 步骤 5：上传用户音频与 AI 音频到 OSS
-	conversationID := uuid.New()
+	conversationID := req.ConversationID
 	userMsgID := uuid.New()
 	aiMsgID := uuid.New()
 	userAudioKey := fmt.Sprintf("chat/%s/user_%s.%s", conversationID, userMsgID, audioType)
@@ -347,9 +347,44 @@ You: "Wonderful! I'm happy too! Why are you happy today?"
 		logger.ErrorContext(ctx, "chat mvp oss provider not initialized", "error", errors.New("oss provider nil"))
 	}
 	logger.InfoContext(ctx, "chat mvp oss audio urls", "userAudioURL", userAudioURL, "aiAudioURL", aiAudioURL)
-	logger.InfoContext(ctx, "保存对话记录到数据库")
 	// 步骤 6：保存对话记录到数据库（失败不影响主流程）
 	if s.conversationRepo != nil && s.messageRepo != nil {
+		var userDuration *int
+		if asrResult.Duration > 0 {
+			userDuration = &asrResult.Duration
+		}
+		var userAudioPtr *string
+		if userAudioURL != "" {
+			userAudioPtr = &userAudioURL
+		}
+		var aiAudioPtr *string
+		if aiAudioURL != "" {
+			aiAudioPtr = &aiAudioURL
+		}
+
+		messages := []*model.ConversationMessage{
+			{
+				ID:             userMsgID,
+				ConversationID: conversationID,
+				SenderType:     "user",
+				MessageText:    userText,
+				AudioURL:       userAudioPtr,
+				AudioDuration:  userDuration,
+				SequenceNumber: 1,
+			},
+			{
+				ID:             aiMsgID,
+				ConversationID: conversationID,
+				SenderType:     "ai",
+				MessageText:    replyText,
+				AudioURL:       aiAudioPtr,
+				SequenceNumber: 2,
+			},
+		}
+		if saveErr := s.messageRepo.BatchCreate(ctx, messages); saveErr != nil {
+			logger.ErrorContext(ctx, "chat mvp save messages failed", "error", saveErr)
+		}
+		// 更新会话记录
 		conversation := &model.VoiceConversation{
 			ID:               conversationID,
 			UserID:           req.UserID,
@@ -360,45 +395,10 @@ You: "Wonderful! I'm happy too! Why are you happy today?"
 			DurationSeconds:  asrResult.Duration,
 			Status:           "completed",
 		}
-		if saveErr := s.conversationRepo.Create(ctx, conversation); saveErr != nil {
+		if saveErr := s.conversationRepo.Update(ctx, conversation); saveErr != nil {
 			logger.ErrorContext(ctx, "chat mvp save conversation failed", "error", saveErr)
-		} else {
-			var userDuration *int
-			if asrResult.Duration > 0 {
-				userDuration = &asrResult.Duration
-			}
-			var userAudioPtr *string
-			if userAudioURL != "" {
-				userAudioPtr = &userAudioURL
-			}
-			var aiAudioPtr *string
-			if aiAudioURL != "" {
-				aiAudioPtr = &aiAudioURL
-			}
-
-			messages := []*model.ConversationMessage{
-				{
-					ID:             userMsgID,
-					ConversationID: conversationID,
-					SenderType:     "user",
-					MessageText:    userText,
-					AudioURL:       userAudioPtr,
-					AudioDuration:  userDuration,
-					SequenceNumber: 1,
-				},
-				{
-					ID:             aiMsgID,
-					ConversationID: conversationID,
-					SenderType:     "ai",
-					MessageText:    replyText,
-					AudioURL:       aiAudioPtr,
-					SequenceNumber: 2,
-				},
-			}
-			if saveErr := s.messageRepo.BatchCreate(ctx, messages); saveErr != nil {
-				logger.ErrorContext(ctx, "chat mvp save messages failed", "error", saveErr)
-			}
 		}
+
 	} else {
 		logger.ErrorContext(ctx, "chat mvp repository not initialized", "error", errors.New("repository nil"))
 	}
