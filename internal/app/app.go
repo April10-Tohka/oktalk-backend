@@ -7,12 +7,11 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"time"
 
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
 	"pronunciation-correction-system/internal/cache"
-	cacheRedis "pronunciation-correction-system/internal/cache/redis"
 	"pronunciation-correction-system/internal/config"
 	"pronunciation-correction-system/internal/db"
 	"pronunciation-correction-system/internal/domain"
@@ -31,9 +30,8 @@ type App struct {
 	Config *config.Config
 
 	// 基础设施
-	DB           *gorm.DB
-	RedisClient  *cacheRedis.Client
-	CacheManager *cache.Manager
+	DB          *gorm.DB
+	RedisClient *redis.Client
 
 	// 数据库仓库
 	Repos *db.Repositories
@@ -104,17 +102,14 @@ func (a *App) initDatabase() error {
 
 // initRedis 初始化 Redis 和缓存管理器
 func (a *App) initRedis() error {
-	mgr, err := cache.NewManager(&cache.ManagerConfig{
-		Redis:        &a.Config.Redis,
-		DefaultQuota: 50,
-	})
-	if err != nil {
-		return err
+	rdb := cache.NewRedisClient(a.Config.Redis)
+
+	ctx := context.Background()
+	if err := cache.Ping(ctx, rdb); err != nil {
+		return fmt.Errorf("redis ping failed: %w", err)
 	}
 
-	a.CacheManager = mgr
-	a.RedisClient = mgr.GetClient()
-
+	a.RedisClient = rdb
 	log.Println("[App] Redis and CacheManager initialized")
 	return nil
 }
@@ -227,11 +222,6 @@ func (a *App) Close() {
 		_ = a.OSSProvider.Close()
 	}
 
-	// 关闭缓存
-	if a.CacheManager != nil {
-		_ = a.CacheManager.Close()
-	}
-
 	// 关闭数据库
 	if a.DB != nil {
 		_ = db.Close(a.DB)
@@ -242,33 +232,4 @@ func (a *App) Close() {
 	}
 
 	log.Println("[App] All resources closed")
-}
-
-// HealthCheck 检查各组件健康状态
-func (a *App) HealthCheck(ctx context.Context) map[string]string {
-	status := map[string]string{
-		"app": "ok",
-	}
-
-	// 检查数据库
-	if err := db.Ping(a.DB); err != nil {
-		status["database"] = fmt.Sprintf("error: %v", err)
-	} else {
-		status["database"] = "ok"
-	}
-
-	// 检查 Redis
-	if a.RedisClient != nil {
-		timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
-		if err := a.RedisClient.Ping(timeoutCtx); err != nil {
-			status["redis"] = fmt.Sprintf("error: %v", err)
-		} else {
-			status["redis"] = "ok"
-		}
-	} else {
-		status["redis"] = "not configured"
-	}
-
-	return status
 }
