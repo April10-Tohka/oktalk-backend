@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"pronunciation-correction-system/internal/cache"
+	"pronunciation-correction-system/internal/pkg/logger"
 )
 
 // ===================== Manager =====================
@@ -141,7 +142,7 @@ func (m *Manager) SubmitTask(ctx context.Context, task *Task) (string, error) {
 
 	// 4. 加入 Pending ZSet
 	if err := m.taskCache.AddPendingTask(ctx, task.Type, task.ID, task.CreatedAt.Unix()); err != nil {
-		m.logger.Warn("add pending task failed", "task_id", task.ID, "error", err)
+		logger.Warn("add pending task failed", "task_id", task.ID, "error", err)
 	}
 
 	// 5. 路由到对应 Pool
@@ -153,7 +154,7 @@ func (m *Manager) SubmitTask(ctx context.Context, task *Task) (string, error) {
 		return "", fmt.Errorf("submit to pool: %w", err)
 	}
 
-	m.logger.Info("task submitted",
+	logger.Info("task submitted",
 		slog.String("task_id", task.ID),
 		slog.String("type", task.Type),
 		slog.String("user_id", task.UserID),

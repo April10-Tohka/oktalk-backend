@@ -3,10 +3,10 @@ package worker
 import (
 	"context"
 	"log/slog"
+	"pronunciation-correction-system/internal/cache"
+	"pronunciation-correction-system/internal/pkg/logger"
 	"strconv"
 	"time"
-
-	"pronunciation-correction-system/internal/cache"
 )
 
 // ===================== 任务回补机制 =====================
@@ -22,12 +22,12 @@ func (m *Manager) StartRecovery(ctx context.Context) {
 	ticker := time.NewTicker(recoveryInterval)
 	defer ticker.Stop()
 
-	m.logger.Info("Task recovery started", slog.Duration("interval", recoveryInterval))
+	logger.Info("Task recovery started", slog.Duration("interval", recoveryInterval))
 
 	for {
 		select {
 		case <-ctx.Done():
-			m.logger.Info("Task recovery stopped")
+			logger.Info("Task recovery stopped")
 			return
 		case <-ticker.C:
 			m.recoverTaskType(ctx, "chat")
@@ -45,7 +45,7 @@ func (m *Manager) recoverTaskType(ctx context.Context, taskType string) {
 		// 使用 ZSCAN 分批遍历
 		results, nextCursor, err := m.taskCache.ScanPendingTasks(ctx, taskType, cursor, scanBatchSize)
 		if err != nil {
-			m.logger.Warn("scan pending tasks failed",
+			logger.Warn("scan pending tasks failed",
 				slog.String("type", taskType), slog.String("error", err.Error()))
 			return
 		}
@@ -69,7 +69,7 @@ func (m *Manager) recoverTaskType(ctx context.Context, taskType string) {
 func (m *Manager) tryRecoverTask(ctx context.Context, taskType, taskID string) {
 	meta, err := m.taskCache.GetTaskMeta(ctx, taskID)
 	if err != nil {
-		m.logger.Warn("get task meta for recovery failed",
+		logger.Warn("get task meta for recovery failed",
 			slog.String("task_id", taskID), slog.String("error", err.Error()))
 		return
 	}
@@ -77,7 +77,7 @@ func (m *Manager) tryRecoverTask(ctx context.Context, taskType, taskID string) {
 	if meta == nil {
 		// meta 不存在（Redis 过期），从 ZSet 移除
 		_ = m.taskCache.RemovePendingTask(ctx, taskType, taskID)
-		m.logger.Info("removed expired pending task",
+		logger.Info("removed expired pending task",
 			slog.String("task_id", taskID), slog.String("type", taskType))
 		return
 	}
@@ -114,12 +114,12 @@ func (m *Manager) tryRecoverTask(ctx context.Context, taskType, taskID string) {
 	}
 
 	if err := pool.Submit(task); err != nil {
-		m.logger.Warn("re-submit recovered task failed",
+		logger.Warn("re-submit recovered task failed",
 			slog.String("task_id", taskID), slog.String("error", err.Error()))
 		return
 	}
 
-	m.logger.Warn("task recovered",
+	logger.Warn("task recovered",
 		slog.String("task_id", taskID),
 		slog.String("type", taskType),
 		slog.Int64("elapsed_seconds", elapsed),

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"pronunciation-correction-system/internal/cache"
+	"pronunciation-correction-system/internal/pkg/logger"
 )
 
 // ===================== TaskProcessor 接口 =====================
@@ -40,7 +41,7 @@ type WorkerPool struct {
 	reportCache *cache.ReportCache
 	logger      *slog.Logger
 	wg          sync.WaitGroup
-	ctx         context.Context
+	ctx         context.Context // 用于取消所有 worker goroutine
 	cancel      context.CancelFunc
 }
 
@@ -80,7 +81,7 @@ func (p *WorkerPool) Start() {
 		p.wg.Add(1)
 		go p.worker(i)
 	}
-	p.logger.Info("WorkerPool started",
+	logger.Info("WorkerPool started",
 		slog.String("name", p.name),
 		slog.Int("workers", p.workerCount),
 	)
@@ -99,9 +100,9 @@ func (p *WorkerPool) Stop() {
 
 	select {
 	case <-done:
-		p.logger.Info("WorkerPool stopped gracefully", slog.String("name", p.name))
+		logger.Info("WorkerPool stopped gracefully", slog.String("name", p.name))
 	case <-time.After(30 * time.Second):
-		p.logger.Warn("WorkerPool stop timeout, force shutdown", slog.String("name", p.name))
+		logger.Warn("WorkerPool stop timeout, force shutdown", slog.String("name", p.name))
 	}
 }
 
@@ -137,7 +138,7 @@ func (p *WorkerPool) processTask(task *Task) {
 
 	// Step 1: 更新状态为 processing
 	if err := p.taskCache.UpdateTaskStatus(taskCtx, task.ID, "processing"); err != nil {
-		p.logger.Error("update task status to processing failed",
+		logger.Error("update task status to processing failed",
 			slog.String("task_id", task.ID), slog.String("error", err.Error()))
 	}
 
@@ -147,10 +148,10 @@ func (p *WorkerPool) processTask(task *Task) {
 	if err != nil {
 		// Step 3a: 失败
 		if updateErr := p.taskCache.UpdateTaskStatus(taskCtx, task.ID, "failed", err.Error()); updateErr != nil {
-			p.logger.Error("update task status to failed err",
+			logger.Error("update task status to failed err",
 				slog.String("task_id", task.ID), slog.String("error", updateErr.Error()))
 		}
-		p.logger.Error("task processing failed",
+		logger.Error("task processing failed",
 			slog.String("pool", p.name),
 			slog.String("task_id", task.ID),
 			slog.String("error", err.Error()),
@@ -162,11 +163,11 @@ func (p *WorkerPool) processTask(task *Task) {
 
 		// Step 3b-2: 更新任务状态
 		if updateErr := p.taskCache.UpdateTaskStatus(taskCtx, task.ID, "success"); updateErr != nil {
-			p.logger.Error("update task status to success err",
+			logger.Error("update task status to success err",
 				slog.String("task_id", task.ID), slog.String("error", updateErr.Error()))
 		}
 		if setErr := p.taskCache.SetResultKey(taskCtx, task.ID, resultKey); setErr != nil {
-			p.logger.Error("set task result key err",
+			logger.Error("set task result key err",
 				slog.String("task_id", task.ID), slog.String("error", setErr.Error()))
 		}
 
@@ -176,7 +177,7 @@ func (p *WorkerPool) processTask(task *Task) {
 				dbCtx, dbCancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer dbCancel()
 				if dbErr := p.persister.SaveResult(dbCtx, task, result); dbErr != nil {
-					p.logger.Error("DEAD_LETTER: db persist failed",
+					logger.Error("DEAD_LETTER: db persist failed",
 						slog.String("task_id", task.ID),
 						slog.String("type", task.Type),
 						slog.String("error", dbErr.Error()),
@@ -191,7 +192,7 @@ func (p *WorkerPool) processTask(task *Task) {
 
 	// Step 4: 从 pending ZSet 移除
 	if removeErr := p.taskCache.RemovePendingTask(taskCtx, task.Type, task.ID); removeErr != nil {
-		p.logger.Error("remove pending task failed",
+		logger.Error("remove pending task failed",
 			slog.String("task_id", task.ID), slog.String("error", removeErr.Error()))
 	}
 }
@@ -212,7 +213,7 @@ func (p *WorkerPool) setResultByType(ctx context.Context, taskType, resultKey st
 		err = p.reportCache.SetReportResult(ctx, resultKey, result)
 	}
 	if err != nil {
-		p.logger.Error("set result cache failed",
+		logger.Error("set result cache failed",
 			slog.String("type", taskType),
 			slog.String("result_key", resultKey),
 			slog.String("error", err.Error()),
@@ -232,7 +233,7 @@ func (p *WorkerPool) invalidateHistory(ctx context.Context, taskType, userID str
 		err = p.reportCache.InvalidateReportHistory(ctx, userID)
 	}
 	if err != nil {
-		p.logger.Warn("invalidate history cache failed",
+		logger.Warn("invalidate history cache failed",
 			slog.String("type", taskType),
 			slog.String("user_id", userID),
 			slog.String("error", err.Error()),
