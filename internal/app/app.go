@@ -23,6 +23,7 @@ import (
 	infraTTS "pronunciation-correction-system/internal/infrastructure/tts/aliyun"
 	"pronunciation-correction-system/internal/pkg/logger"
 	"pronunciation-correction-system/internal/service"
+	"pronunciation-correction-system/internal/worker"
 )
 
 // App 应用程序实例，持有所有依赖
@@ -32,6 +33,15 @@ type App struct {
 	// 基础设施
 	DB          *gorm.DB
 	RedisClient *redis.Client
+
+	// 缓存层
+	TaskCache   *cache.TaskCache
+	ChatCache   *cache.ChatCache
+	EvalCache   *cache.EvalCache
+	ReportCache *cache.ReportCache
+
+	// Worker Manager
+	WorkerManager *worker.Manager
 
 	// 数据库仓库
 	Repos *db.Repositories
@@ -110,7 +120,14 @@ func (a *App) initRedis() error {
 	}
 
 	a.RedisClient = rdb
-	log.Println("[App] Redis and CacheManager initialized")
+
+	// 创建缓存实例
+	a.TaskCache = cache.NewTaskCache(rdb)
+	a.ChatCache = cache.NewChatCache(rdb)
+	a.EvalCache = cache.NewEvalCache(rdb)
+	a.ReportCache = cache.NewReportCache(rdb)
+
+	log.Println("[App] Redis and cache instances initialized")
 	return nil
 }
 
@@ -176,12 +193,41 @@ func (a *App) initLogger() error {
 }
 
 // initServices 初始化业务服务
-// TODO: Step2 注入真实依赖（Repos, Provider 等）
 func (a *App) initServices() {
 	appLogger := slog.Default()
 	a.AuthService = service.NewAuthService(appLogger)
 	a.UserService = service.NewUserService(appLogger)
-	a.ChatService = service.NewChatService(a.Repos, a.ASRProvider, a.LLMProvider, a.TTSProvider, a.OSSProvider, appLogger)
+
+	// 创建 Worker Manager（需要在 ChatService 之前）
+	chatProcessor := service.NewChatTaskProcessor(
+		a.ASRProvider, a.LLMProvider, a.TTSProvider, a.OSSProvider,
+		a.Repos, a.TaskCache, appLogger,
+	)
+	chatPersister := service.NewChatResultPersister(appLogger)
+
+	a.WorkerManager = worker.NewManager(
+		worker.DefaultManagerConfig(),
+		worker.ProcessorSet{Chat: chatProcessor},
+		worker.PersisterSet{Chat: chatPersister},
+		a.TaskCache,
+		a.ChatCache,
+		a.EvalCache,
+		a.ReportCache,
+		appLogger,
+	)
+	a.WorkerManager.Start()
+
+	a.ChatService = service.NewChatService(
+		a.Repos,
+		a.ASRProvider,
+		a.LLMProvider,
+		a.TTSProvider,
+		a.OSSProvider,
+		a.TaskCache,
+		a.ChatCache,
+		a.WorkerManager,
+		appLogger,
+	)
 	a.EvaluateService = service.NewEvaluateService(a.Repos, a.EvaluationProvider, a.LLMProvider, a.TTSProvider, a.OSSProvider, appLogger)
 	a.ReportService = service.NewReportService(a.Repos, a.LLMProvider, a.TTSProvider, a.OSSProvider, appLogger)
 
@@ -205,6 +251,11 @@ func (a *App) initHandlers() {
 func (a *App) Close() {
 	log.Println("[App] Shutting down...")
 
+	// 关闭 Worker Manager
+	if a.WorkerManager != nil {
+		a.WorkerManager.Stop()
+	}
+
 	// 关闭外部服务适配器
 	if a.ASRProvider != nil {
 		_ = a.ASRProvider.Close()
@@ -220,6 +271,11 @@ func (a *App) Close() {
 	}
 	if a.OSSProvider != nil {
 		_ = a.OSSProvider.Close()
+	}
+
+	// 关闭 Redis
+	if a.RedisClient != nil {
+		_ = a.RedisClient.Close()
 	}
 
 	// 关闭数据库

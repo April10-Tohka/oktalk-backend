@@ -131,24 +131,96 @@ func (h *ChatHandler) StartSession(c *gin.Context) {
 // SubmitChat POST /api/v1/chat/submit
 // 提交异步语音对话请求，返回 task_id
 func (h *ChatHandler) SubmitChat(c *gin.Context) {
-	// TODO: Step3 实现
-	// 1. 解析 multipart/form-data: audio_file, audio_type, session_id, user_language, topic_id
-	// 2. 从 Context 获取 user_id
-	// 3. 调用 h.chatService.SubmitChat(ctx, req)
-	// 4. 成功：OK(c, gin.H{"task_id": taskID, "session_id": req.SessionID, "status": "pending"})
-	// 5. 失败：InternalError(c, err.Error())
-	InternalError(c, "not implemented")
+	// 步骤 1：解析 multipart/form-data
+	type submitChatForm struct {
+		ConversationID   string                `form:"conversation_id" binding:"required"`
+		AudioType        string                `form:"audio_type"`
+		ConversationType string                `form:"conversation_type"`
+		DifficultyLevel  string                `form:"difficulty_level"`
+		Topic            string                `form:"topic"`
+		AudioFile        *multipart.FileHeader `form:"audio_file" binding:"required"`
+	}
+	var form submitChatForm
+	if err := c.ShouldBind(&form); err != nil {
+		logger.ErrorContext(c.Request.Context(), "submit chat bind form failed", "error", err)
+		BadRequest(c, "invalid request body: "+err.Error())
+		return
+	}
+
+	// 步骤 2：检查文件大小 ≤ 10MB
+	if form.AudioFile.Size > 10*1024*1024 {
+		BadRequest(c, "audio file too large, max 10MB")
+		return
+	}
+
+	// 步骤 3：读取音频数据
+	file, err := form.AudioFile.Open()
+	if err != nil {
+		logger.ErrorContext(c.Request.Context(), "submit chat open file failed", "error", err)
+		InternalError(c, "failed to read audio file")
+		return
+	}
+	defer file.Close()
+
+	audioData, err := io.ReadAll(file)
+	if err != nil {
+		logger.ErrorContext(c.Request.Context(), "submit chat read file failed", "error", err)
+		InternalError(c, "failed to read audio data")
+		return
+	}
+
+	// 步骤 4：从 Context 获取 user_id
+	userID, exists := c.Get(string(middleware.UserIDKey))
+	if !exists {
+		Unauthorized(c)
+		return
+	}
+
+	// 步骤 5：调用 Service
+	taskID, err := h.chatService.SubmitChat(c.Request.Context(), &service.SubmitChatRequest{
+		AudioData:        audioData,
+		AudioType:        form.AudioType,
+		ConversationID:   form.ConversationID,
+		ConversationType: form.ConversationType,
+		DifficultyLevel:  form.DifficultyLevel,
+		Topic:            form.Topic,
+		UserID:           userID.(string),
+	})
+	if err != nil {
+		logger.ErrorContext(c.Request.Context(), "submit chat service failed", "error", err)
+		InternalError(c, err.Error())
+		return
+	}
+
+	// 步骤 6：返回成功响应
+	OK(c, gin.H{
+		"task_id":         taskID,
+		"conversation_id": form.ConversationID,
+		"status":          "pending",
+		"message":         "语音对话任务已提交，请轮询查询结果",
+	})
 }
 
 // GetChatResult GET /api/v1/chat/result/:task_id
 // 查询异步语音对话处理结果
 func (h *ChatHandler) GetChatResult(c *gin.Context) {
-	// TODO: Step3 实现
-	// 1. 解析路径参数: task_id
-	// 2. 调用 h.chatService.GetChatResult(ctx, taskID)
-	// 3. 成功：OK(c, result)
-	// 4. 失败：InternalError(c, err.Error())
-	InternalError(c, "not implemented")
+	// 步骤 1：解析路径参数
+	taskID := c.Param("task_id")
+	if taskID == "" {
+		BadRequest(c, "task_id is required")
+		return
+	}
+
+	// 步骤 2：调用 Service
+	result, err := h.chatService.GetChatResult(c.Request.Context(), taskID)
+	if err != nil {
+		logger.ErrorContext(c.Request.Context(), "get chat result failed", "task_id", taskID, "error", err)
+		InternalError(c, err.Error())
+		return
+	}
+
+	// 步骤 3：返回结果
+	OK(c, result)
 }
 
 // GetChatHistory GET /api/v1/chat/history/:session_id

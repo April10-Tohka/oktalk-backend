@@ -12,14 +12,15 @@ import (
 
 // TaskMeta 任务元数据
 type TaskMeta struct {
-	TaskID    string `json:"task_id"`
-	Type      string `json:"type"`   // chat / evaluate / report
-	Status    string `json:"status"` // pending / processing / success / failed
-	ResultKey string `json:"result_key"`
-	Error     string `json:"error,omitempty"`
-	CreatedAt int64  `json:"created_at"`
-	UpdatedAt int64  `json:"updated_at"`
-	UserID    string `json:"user_id"`
+	TaskID       string `json:"task_id"`
+	Type         string `json:"type"`          // chat / evaluate / report
+	Status       string `json:"status"`        // pending / processing / success / failed
+	CurrentStage string `json:"current_stage"` // queued / asr / llm / tts / oss / db / completed
+	ResultKey    string `json:"result_key"`
+	Error        string `json:"error,omitempty"`
+	CreatedAt    int64  `json:"created_at"`
+	UpdatedAt    int64  `json:"updated_at"`
+	UserID       string `json:"user_id"`
 }
 
 // ===================== TaskCache =====================
@@ -69,6 +70,21 @@ func (c *TaskCache) UpdateTaskStatus(ctx context.Context, taskID, status string,
 		meta.Error = errMsg[0]
 	}
 
+	return c.SetTaskMeta(ctx, taskID, meta)
+}
+
+// UpdateTaskStage 更新任务当前阶段
+func (c *TaskCache) UpdateTaskStage(ctx context.Context, taskID, stage string) error {
+	meta, err := c.GetTaskMeta(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if meta == nil {
+		return fmt.Errorf("task meta not found: %s", taskID)
+	}
+
+	meta.CurrentStage = stage
+	meta.UpdatedAt = time.Now().Unix()
 	return c.SetTaskMeta(ctx, taskID, meta)
 }
 

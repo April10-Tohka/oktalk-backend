@@ -139,6 +139,7 @@ func (m *Manager) SubmitTask(ctx context.Context, task *Task) (string, error) {
 	if err := m.taskCache.SetTaskMeta(ctx, task.ID, meta); err != nil {
 		return "", fmt.Errorf("set task meta: %w", err)
 	}
+	// TODO: 写入 DB
 
 	// 4. 加入 Pending ZSet
 	if err := m.taskCache.AddPendingTask(ctx, task.Type, task.ID, task.CreatedAt.Unix()); err != nil {

@@ -18,7 +18,7 @@ const (
 
 // 结果类
 const (
-	KeyChatResult   = "chat:result:%s"     // chat:result:{task_id}
+	KeyChatResult   = "chat:result:%s"     // chat:result:{conversation_id}
 	KeyEvalResult   = "evaluate:result:%s" // evaluate:result:{eval_id}
 	KeyReportResult = "report:result:%s"   // report:result:{report_id}
 )

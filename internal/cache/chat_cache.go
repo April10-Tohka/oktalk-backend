@@ -16,8 +16,12 @@ type ChatResult struct {
 	TaskID         string `json:"task_id"`
 	ConversationID string `json:"conversation_id"`
 	UserID         string `json:"user_id"`
+	UserText       string `json:"user_text"`
+	UserAudioURL   string `json:"user_audio_url,omitempty"`
+	DurationMs     int    `json:"duration_ms"`
 	AIReply        string `json:"ai_reply"`
 	AudioURL       string `json:"audio_url,omitempty"`
+	AIDurationMs   int    `json:"ai_duration_ms,omitempty"`
 	CreatedAt      int64  `json:"created_at"`
 }
 
@@ -51,14 +55,14 @@ func NewChatCache(rdb *redis.Client) *ChatCache {
 }
 
 // SetChatResult 写入对话结果
-func (c *ChatCache) SetChatResult(ctx context.Context, taskID string, result *ChatResult) error {
-	key := fmt.Sprintf(KeyChatResult, taskID)
+func (c *ChatCache) SetChatResult(ctx context.Context, conversationID string, result *ChatResult) error {
+	key := fmt.Sprintf(KeyChatResult, conversationID)
 	return SetJSON(ctx, c.rdb, key, result, TTLChatResult)
 }
 
 // GetChatResult 获取对话结果
-func (c *ChatCache) GetChatResult(ctx context.Context, taskID string) (*ChatResult, bool, error) {
-	key := fmt.Sprintf(KeyChatResult, taskID)
+func (c *ChatCache) GetChatResult(ctx context.Context, conversationID string) (*ChatResult, bool, error) {
+	key := fmt.Sprintf(KeyChatResult, conversationID)
 	return GetJSON[ChatResult](ctx, c.rdb, key)
 }
 
