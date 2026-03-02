@@ -20,8 +20,7 @@ func NewReportCache(rdb *redis.Client) *ReportCache {
 }
 
 // SetReportResult 写入报告结果（任意类型存储为 JSON）
-func (c *ReportCache) SetReportResult(ctx context.Context, reportID string, result interface{}) error {
-	key := fmt.Sprintf(KeyReportResult, reportID)
+func (c *ReportCache) SetReportResult(ctx context.Context, key string, result interface{}) error {
 	return SetJSON(ctx, c.rdb, key, result, TTLReportResult)
 }
 

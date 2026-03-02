@@ -388,11 +388,13 @@ You: "Wonderful! I'm happy too! Why are you happy today?"
 
 		var turnID = 1
 		var nextSeq = 1
+		// 步骤 6.1：获取当前最大 TurnID 并加 1 作为新的 TurnID
 		if maxTurn, err := s.messageRepo.GetMaxTurnID(ctx, conversationID); err == nil {
 			turnID = maxTurn + 1
 		} else {
 			logger.ErrorContext(ctx, "chat mvp get max turn id failed", "error", err)
 		}
+		// 步骤 6.2：获取当前最大 SequenceNumber 并加 1 作为新的 SequenceNumber
 		if seq, err := s.messageRepo.GetNextSequenceNumber(ctx, conversationID); err == nil {
 			nextSeq = seq
 		} else {
@@ -505,7 +507,45 @@ func (s *chatServiceImpl) SubmitChat(ctx context.Context, req *SubmitChatRequest
 		}
 	}
 
-	// 步骤 5：序列化 Payload
+	// 步骤 5：生成消息 ID 并预先落库
+	userMsgID := uuid.New()
+	aiMsgID := uuid.New()
+
+	if s.messageRepo != nil {
+		var turnID = 1
+		var nextSeq = 1
+		if maxTurn, err := s.messageRepo.GetMaxTurnID(ctx, req.ConversationID); err == nil {
+			turnID = maxTurn + 1
+		}
+		if seq, err := s.messageRepo.GetNextSequenceNumber(ctx, req.ConversationID); err == nil {
+			nextSeq = seq
+		}
+
+		messages := []*model.ConversationMessage{
+			{
+				ID:             userMsgID,
+				ConversationID: req.ConversationID,
+				TurnID:         turnID,
+				SenderType:     "user",
+				MessageText:    "", // 占位为空，等待异步结果覆盖
+				SequenceNumber: nextSeq,
+			},
+			{
+				ID:             aiMsgID,
+				ConversationID: req.ConversationID,
+				TurnID:         turnID,
+				SenderType:     "ai",
+				MessageText:    "", // 占位为空，等待异步结果覆盖
+				SequenceNumber: nextSeq + 1,
+			},
+		}
+		if saveErr := s.messageRepo.BatchCreate(ctx, messages); saveErr != nil {
+			logger.ErrorContext(ctx, "submit chat pre-save placeholders failed", "error", saveErr)
+			// 这里不强制中断，让后台继续处理
+		}
+	}
+
+	// 步骤 6：序列化 Payload
 	payloadStruct := chatPayloadData{
 		AudioData:        req.AudioData,
 		AudioType:        audioType,
@@ -514,17 +554,20 @@ func (s *chatServiceImpl) SubmitChat(ctx context.Context, req *SubmitChatRequest
 		DifficultyLevel:  difficultyLevel,
 		Topic:            topic,
 		UserID:           req.UserID,
+		UserMessageID:    userMsgID,
+		AIMessageID:      aiMsgID,
 	}
 	payload, err := json.Marshal(&payloadStruct)
 	if err != nil {
 		return "", fmt.Errorf("marshal chat payload: %w", err)
 	}
 
-	// 步骤 6：构建 Task 并提交
+	// 步骤 7：构建 Task 并提交 (以 userMsgID 作为 DomainID)
 	task := &worker.Task{
-		Type:    "chat",
-		UserID:  req.UserID,
-		Payload: payload,
+		Type:     "chat",
+		DomainID: userMsgID,
+		UserID:   req.UserID,
+		Payload:  payload,
 	}
 
 	taskID, err := s.workerManager.SubmitTask(ctx, task)
@@ -680,6 +723,8 @@ type chatPayloadData struct {
 	DifficultyLevel  string `json:"difficulty_level"`
 	Topic            string `json:"topic"`
 	UserID           string `json:"user_id"`
+	UserMessageID    string `json:"user_message_id"`
+	AIMessageID      string `json:"ai_message_id"`
 }
 
 // ChatTaskProcessor 实现 worker.TaskProcessor 接口
@@ -725,14 +770,15 @@ func NewChatTaskProcessor(
 // Process 实现 worker.TaskProcessor 接口
 // 返回: (*cache.ChatResult, resultKey, error)
 func (p *ChatTaskProcessor) Process(ctx context.Context, task *worker.Task) (interface{}, string, error) {
-	payload, err := worker.LoadTaskPayload[chatPayloadData](task)
-	if err != nil {
+	// 反序列化payload
+	var payload chatPayloadData
+	if err := json.Unmarshal(task.Payload, &payload); err != nil {
 		return nil, "", fmt.Errorf("unmarshal payload: %w", err)
 	}
 
 	conversationID := payload.ConversationID
 	audioType := payload.AudioType
-	resultKey := fmt.Sprintf(cache.KeyChatResult, task.ID)
+	resultKey := fmt.Sprintf(cache.KeyChatResult, task.DomainID)
 
 	// ===== A1: ASR 语音识别 =====
 	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "asr")
@@ -822,11 +868,18 @@ Conversation history:
 		// TTS失败仅返回文本，不中断
 	}
 
-	// ===== A5: 上传音频到 OSS =====
+	// 步骤 5: 获取之前预留的记录并上传相关录音到 OSS
 	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "oss")
 
-	userMsgID := uuid.New()
-	aiMsgID := uuid.New()
+	userMsgID := payload.UserMessageID
+	aiMsgID := payload.AIMessageID
+
+	if userMsgID == "" || aiMsgID == "" {
+		p.logger.Error("missing message id in payload, falling back to new uuid")
+		userMsgID = uuid.New()
+		aiMsgID = uuid.New()
+	}
+
 	userAudioKey := fmt.Sprintf("chat/%s/user_%s.%s", conversationID, userMsgID, audioType)
 	aiAudioKey := fmt.Sprintf("chat/%s/ai_%s.mp3", conversationID, aiMsgID)
 
@@ -846,18 +899,10 @@ Conversation history:
 		}
 	}
 
-	// ===== A6: 保存对话记录到数据库 =====
+	// ===== A6: 保存(更新)对话记录到数据库 =====
 	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "db")
 
-	var nextSeq int
-	if p.messageRepo != nil && p.conversationRepo != nil {
-		seq, seqErr := p.messageRepo.GetNextSequenceNumber(ctx, conversationID)
-		if seqErr != nil {
-			p.logger.Error("get next seq failed", slog.String("error", seqErr.Error()))
-			seq = 1
-		}
-		nextSeq = seq
-
+	if p.messageRepo != nil {
 		var userAudioPtr, aiAudioPtr *string
 		if userAudioURL != "" {
 			userAudioPtr = &userAudioURL
@@ -870,41 +915,57 @@ Conversation history:
 			userDuration = &asrResult.Duration
 		}
 
-		messages := []*model.ConversationMessage{
-			{
+		// Update User Message
+		if userMsg, err := p.messageRepo.GetByID(ctx, userMsgID); err == nil && userMsg != nil {
+			userMsg.MessageText = userText
+			userMsg.AudioURL = userAudioPtr
+			userMsg.AudioDuration = userDuration
+			_ = p.messageRepo.Update(ctx, userMsg)
+		} else {
+			// Fallback: create if missing
+			seq, _ := p.messageRepo.GetNextSequenceNumber(ctx, conversationID)
+			turn, _ := p.messageRepo.GetMaxTurnID(ctx, conversationID)
+			_ = p.messageRepo.Create(ctx, &model.ConversationMessage{
 				ID:             userMsgID,
 				ConversationID: conversationID,
+				TurnID:         turn + 1,
 				SenderType:     "user",
 				MessageText:    userText,
 				AudioURL:       userAudioPtr,
 				AudioDuration:  userDuration,
-				SequenceNumber: nextSeq,
-			},
-			{
+				SequenceNumber: seq,
+			})
+		}
+
+		// Update AI Message
+		if aiMsg, err := p.messageRepo.GetByID(ctx, aiMsgID); err == nil && aiMsg != nil {
+			aiMsg.MessageText = replyText
+			aiMsg.AudioURL = aiAudioPtr
+			_ = p.messageRepo.Update(ctx, aiMsg)
+		} else {
+			// Fallback: create if missing
+			seq, _ := p.messageRepo.GetNextSequenceNumber(ctx, conversationID)
+			turn, _ := p.messageRepo.GetMaxTurnID(ctx, conversationID)
+			_ = p.messageRepo.Create(ctx, &model.ConversationMessage{
 				ID:             aiMsgID,
 				ConversationID: conversationID,
+				TurnID:         turn,
 				SenderType:     "ai",
 				MessageText:    replyText,
 				AudioURL:       aiAudioPtr,
-				SequenceNumber: nextSeq + 1,
-			},
+				SequenceNumber: seq,
+			})
 		}
 
-		for dbRetry := 0; dbRetry < 3; dbRetry++ {
-			if saveErr := p.messageRepo.BatchCreate(ctx, messages); saveErr != nil {
-				p.logger.Error("save messages retry", slog.Int("attempt", dbRetry+1), slog.String("error", saveErr.Error()))
-				time.Sleep(time.Duration(dbRetry+1) * 500 * time.Millisecond)
-				continue
+		// 更新会话的统计时长和消息数
+		if p.conversationRepo != nil {
+			if conv, err := p.conversationRepo.GetByID(ctx, conversationID); err == nil && conv != nil {
+				// 获取实际消息数（考虑到可能是 fallback 创建的）
+				msgCount, _ := p.messageRepo.CountByConversationID(ctx, conversationID)
+				conv.MessageCount = int(msgCount)
+				conv.DurationSeconds += asrResult.Duration
+				_ = p.conversationRepo.Update(ctx, conv)
 			}
-			break
-		}
-
-		// 更新会话记录
-		if incrErr := p.conversationRepo.IncrementMessageCount(ctx, conversationID); incrErr != nil {
-			p.logger.Error("increment message count failed", slog.String("error", incrErr.Error()))
-		}
-		if incrErr := p.conversationRepo.IncrementMessageCount(ctx, conversationID); incrErr != nil {
-			p.logger.Error("increment message count (ai) failed", slog.String("error", incrErr.Error()))
 		}
 	}
 

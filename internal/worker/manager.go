@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -114,13 +113,20 @@ func (m *Manager) SubmitTask(ctx context.Context, task *Task) (string, error) {
 
 	// 2. 构建 TaskMeta
 	var resultKey string
+	var cacheSubKey string
+	if task.DomainID != "" {
+		cacheSubKey = task.DomainID
+	} else {
+		cacheSubKey = task.ID
+	}
+
 	switch task.Type {
 	case "chat":
-		resultKey = fmt.Sprintf(cache.KeyChatResult, task.ID)
+		resultKey = fmt.Sprintf(cache.KeyChatResult, cacheSubKey)
 	case "evaluate":
-		resultKey = fmt.Sprintf(cache.KeyEvalResult, task.ID)
+		resultKey = fmt.Sprintf(cache.KeyEvalResult, cacheSubKey)
 	case "report":
-		resultKey = fmt.Sprintf(cache.KeyReportResult, task.ID)
+		resultKey = fmt.Sprintf(cache.KeyReportResult, cacheSubKey)
 	default:
 		return "", fmt.Errorf("unknown task type: %s", task.Type)
 	}
@@ -246,13 +252,4 @@ func (m *Manager) getResultByType(ctx context.Context, taskType, resultKey strin
 	default:
 		return nil, nil
 	}
-}
-
-// LoadTaskPayload 从 Payload 解码到目标结构
-func LoadTaskPayload[T any](task *Task) (*T, error) {
-	var payload T
-	if err := json.Unmarshal(task.Payload, &payload); err != nil {
-		return nil, fmt.Errorf("unmarshal task payload: %w", err)
-	}
-	return &payload, nil
 }

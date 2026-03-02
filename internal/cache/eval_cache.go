@@ -51,8 +51,7 @@ func NewEvalCache(rdb *redis.Client) *EvalCache {
 }
 
 // SetEvalResult 写入评测结果
-func (c *EvalCache) SetEvalResult(ctx context.Context, evalID string, result *EvalResult) error {
-	key := fmt.Sprintf(KeyEvalResult, evalID)
+func (c *EvalCache) SetEvalResult(ctx context.Context, key string, result *EvalResult) error {
 	return SetJSON(ctx, c.rdb, key, result, TTLEvalResult)
 }
 

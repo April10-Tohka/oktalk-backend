@@ -8,7 +8,8 @@ import "time"
 // Task 异步任务
 type Task struct {
 	ID         string    `json:"id"`
-	Type       string    `json:"type"` // chat / evaluate / report
+	Type       string    `json:"type"`      // chat / evaluate / report
+	DomainID   string    `json:"domain_id"` // 业务主键ID，用于映射如 chat的UserMessageID 或 evaluate的EvaluationID
 	UserID     string    `json:"user_id"`
 	Payload    []byte    `json:"payload"` // JSON 序列化的业务参数
 	CreatedAt  time.Time `json:"created_at"`

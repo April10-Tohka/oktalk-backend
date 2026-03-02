@@ -55,8 +55,7 @@ func NewChatCache(rdb *redis.Client) *ChatCache {
 }
 
 // SetChatResult 写入对话结果
-func (c *ChatCache) SetChatResult(ctx context.Context, conversationID string, result *ChatResult) error {
-	key := fmt.Sprintf(KeyChatResult, conversationID)
+func (c *ChatCache) SetChatResult(ctx context.Context, key string, result *ChatResult) error {
 	return SetJSON(ctx, c.rdb, key, result, TTLChatResult)
 }
 
