@@ -198,17 +198,29 @@ func (a *App) initServices() {
 	a.AuthService = service.NewAuthService(appLogger)
 	a.UserService = service.NewUserService(appLogger)
 
-	// 创建 Worker Manager（需要在 ChatService 之前）
+	// 创建 Worker Manager（需要在 Service 之前）
 	chatProcessor := service.NewChatTaskProcessor(
 		a.ASRProvider, a.LLMProvider, a.TTSProvider, a.OSSProvider,
 		a.Repos, a.TaskCache, appLogger,
 	)
 	chatPersister := service.NewChatResultPersister(appLogger)
 
+	evalProcessor := service.NewEvalTaskProcessor(
+		a.EvaluationProvider, a.LLMProvider, a.TTSProvider, a.OSSProvider,
+		a.Repos, a.TaskCache, appLogger,
+	)
+	evalPersister := service.NewEvalResultPersister(appLogger)
+
+	reportProcessor := service.NewReportTaskProcessor(
+		a.Repos, a.LLMProvider, a.TTSProvider, a.OSSProvider,
+		a.TaskCache, appLogger,
+	)
+	reportPersister := service.NewReportResultPersister(appLogger)
+
 	a.WorkerManager = worker.NewManager(
 		worker.DefaultManagerConfig(),
-		worker.ProcessorSet{Chat: chatProcessor},
-		worker.PersisterSet{Chat: chatPersister},
+		worker.ProcessorSet{Chat: chatProcessor, Eval: evalProcessor, Report: reportProcessor},
+		worker.PersisterSet{Chat: chatPersister, Eval: evalPersister, Report: reportPersister},
 		a.TaskCache,
 		a.ChatCache,
 		a.EvalCache,
@@ -228,8 +240,27 @@ func (a *App) initServices() {
 		a.WorkerManager,
 		appLogger,
 	)
-	a.EvaluateService = service.NewEvaluateService(a.Repos, a.EvaluationProvider, a.LLMProvider, a.TTSProvider, a.OSSProvider, appLogger)
-	a.ReportService = service.NewReportService(a.Repos, a.LLMProvider, a.TTSProvider, a.OSSProvider, appLogger)
+	a.EvaluateService = service.NewEvaluateService(
+		a.Repos,
+		a.EvaluationProvider,
+		a.LLMProvider,
+		a.TTSProvider,
+		a.OSSProvider,
+		a.TaskCache,
+		a.EvalCache,
+		a.WorkerManager,
+		appLogger,
+	)
+	a.ReportService = service.NewReportService(
+		a.Repos,
+		a.LLMProvider,
+		a.TTSProvider,
+		a.OSSProvider,
+		a.TaskCache,
+		a.ReportCache,
+		a.WorkerManager,
+		appLogger,
+	)
 
 	log.Println("[App] Services initialized")
 }

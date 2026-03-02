@@ -112,13 +112,103 @@ func (h *EvaluateHandler) EvaluateMVP(c *gin.Context) {
 }
 
 // SubmitEvaluation POST /api/v1/evaluate/submit
+// 提交异步发音评测请求，返回 eval_id
 func (h *EvaluateHandler) SubmitEvaluation(c *gin.Context) {
-	InternalError(c, "not implemented")
+	// 步骤 1：解析 multipart/form-data
+	type submitEvalForm struct {
+		AudioFile       *multipart.FileHeader `form:"audio_file" binding:"required"`
+		AudioType       string                `form:"audio_type"`
+		TextID          string                `form:"text_id" binding:"required"`
+		Category        string                `form:"category" binding:"required"`
+		DifficultyLevel string                `form:"difficulty_level"`
+	}
+	var form submitEvalForm
+	if err := c.ShouldBind(&form); err != nil {
+		logger.ErrorContext(c.Request.Context(), "submit eval bind form failed", "error", err)
+		BadRequest(c, "invalid request body: "+err.Error())
+		return
+	}
+
+	// 步骤 2：校验 category
+	category := strings.TrimSpace(form.Category)
+	if category != "read_word" && category != "read_sentence" {
+		BadRequest(c, "invalid category: must be read_word or read_sentence")
+		return
+	}
+
+	// 步骤 3：检查文件大小 ≤ 10MB
+	if form.AudioFile.Size > 10*1024*1024 {
+		BadRequest(c, "audio file too large, max 10MB")
+		return
+	}
+
+	// 步骤 4：读取音频数据
+	file, err := form.AudioFile.Open()
+	if err != nil {
+		logger.ErrorContext(c.Request.Context(), "submit eval open file failed", "error", err)
+		InternalError(c, "failed to read audio file")
+		return
+	}
+	defer file.Close()
+
+	audioData, err := io.ReadAll(file)
+	if err != nil {
+		logger.ErrorContext(c.Request.Context(), "submit eval read file failed", "error", err)
+		InternalError(c, "failed to read audio data")
+		return
+	}
+
+	// 步骤 5：从 Context 获取 user_id
+	userID, exists := c.Get(string(middleware.UserIDKey))
+	if !exists {
+		Unauthorized(c)
+		return
+	}
+
+	// 步骤 6：调用 Service
+	taskID, err := h.evaluateService.SubmitEvaluation(c.Request.Context(), &service.SubmitEvaluationRequest{
+		AudioData:       audioData,
+		AudioType:       strings.ToLower(strings.TrimSpace(form.AudioType)),
+		TextID:          strings.TrimSpace(form.TextID),
+		Category:        category,
+		DifficultyLevel: strings.TrimSpace(form.DifficultyLevel),
+		UserID:          userID.(string),
+	})
+	if err != nil {
+		logger.ErrorContext(c.Request.Context(), "submit eval service failed", "error", err)
+		InternalError(c, err.Error())
+		return
+	}
+
+	// 步骤 7：返回成功响应
+	OK(c, gin.H{
+		"task_id": taskID,
+		"text_id": form.TextID,
+		"status":  "pending",
+		"message": "发音评测任务已提交，请轮询查询结果",
+	})
 }
 
 // GetEvaluationResult GET /api/v1/evaluate/result/:eval_id
+// 查询异步发音评测处理结果
 func (h *EvaluateHandler) GetEvaluationResult(c *gin.Context) {
-	InternalError(c, "not implemented")
+	// 步骤 1：解析路径参数
+	evalID := c.Param("eval_id")
+	if evalID == "" {
+		BadRequest(c, "eval_id is required")
+		return
+	}
+
+	// 步骤 2：调用 Service
+	result, err := h.evaluateService.GetEvaluationResult(c.Request.Context(), evalID)
+	if err != nil {
+		logger.ErrorContext(c.Request.Context(), "get eval result failed", "eval_id", evalID, "error", err)
+		InternalError(c, err.Error())
+		return
+	}
+
+	// 步骤 3：返回结果
+	OK(c, result)
 }
 
 // GetEvaluationHistory GET /api/v1/evaluate/history

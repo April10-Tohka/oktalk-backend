@@ -22,6 +22,7 @@ type ConversationMessageRepository interface {
 	GetByConversationIDPaginated(ctx context.Context, conversationID string, page, pageSize int) ([]*model.ConversationMessage, int64, error)
 	GetLastMessage(ctx context.Context, conversationID string) (*model.ConversationMessage, error)
 	GetNextSequenceNumber(ctx context.Context, conversationID string) (int, error)
+	GetMaxTurnID(ctx context.Context, conversationID string) (int, error)
 
 	// 统计方法
 	CountByConversationID(ctx context.Context, conversationID string) (int64, error)
@@ -153,6 +154,20 @@ func (r *conversationMessageRepository) GetNextSequenceNumber(ctx context.Contex
 		return 0, WrapDBError(err, "get next sequence number")
 	}
 	return maxSeq + 1, nil
+}
+
+// GetMaxTurnID 获取当前对话的最大轮次
+func (r *conversationMessageRepository) GetMaxTurnID(ctx context.Context, conversationID string) (int, error) {
+	var maxTurn int
+	err := r.db.WithContext(ctx).
+		Model(&model.ConversationMessage{}).
+		Where("conversation_id = ?", conversationID).
+		Select("COALESCE(MAX(turn_id), 0)").
+		Scan(&maxTurn).Error
+	if err != nil {
+		return 0, WrapDBError(err, "get max turn id")
+	}
+	return maxTurn, nil
 }
 
 // CountByConversationID 统计对话消息数

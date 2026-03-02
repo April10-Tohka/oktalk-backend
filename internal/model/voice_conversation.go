@@ -58,6 +58,8 @@ type ConversationMessage struct {
 	ConversationID string `gorm:"index;type:varchar(36);not null" json:"conversation_id" validate:"required,uuid"`
 	// SenderType 发送者类型：user/ai
 	SenderType string `gorm:"index;type:enum('user','ai');not null" json:"sender_type" validate:"required,oneof=user ai"`
+	// TurnID 轮次 ID（从 1 开始，同一回合的 User 和 AI 消息 TurnID 相同）
+	TurnID int `gorm:"index;type:int;not null" json:"turn_id" validate:"required,gte=1"`
 	// MessageText 消息文本内容
 	MessageText string `gorm:"type:longtext;not null" json:"message_text" validate:"required"`
 	// AudioURL 音频 URL（用户语音或 AI 语音）

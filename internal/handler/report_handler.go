@@ -56,38 +56,90 @@ func (h *ReportHandler) ReportMVP(c *gin.Context) {
 }
 
 // GenerateReport POST /api/v1/report/generate
-// 提交异步报告生成任务，返回 report_id
+// 提交异步报告生成任务，返回 task_id
 func (h *ReportHandler) GenerateReport(c *gin.Context) {
-	// TODO: Step3 实现
-	// 1. 解析 JSON 请求体: report_type, start_date, end_date, include_evaluations, include_chat_stats, custom_prompt
-	// 2. 从 Context 获取 user_id
-	// 3. 调用 h.reportService.GenerateReport(ctx, req)
-	// 4. 成功：OK(c, gin.H{"report_id": reportID, "report_type": req.ReportType, "status": "generating"})
-	// 5. 失败：InternalError(c, err.Error())
-	InternalError(c, "not implemented")
+	// 步骤 1：解析 JSON 请求体
+	var reqBody struct {
+		ReportType string `json:"report_type" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&reqBody); err != nil {
+		BadRequest(c, "invalid request body: "+err.Error())
+		return
+	}
+
+	// 步骤 2：校验 report_type
+	if reqBody.ReportType != "weekly" && reqBody.ReportType != "monthly" {
+		BadRequest(c, "invalid report_type: must be weekly or monthly")
+		return
+	}
+
+	// 步骤 3：从 Context 获取 user_id
+	userID, exists := c.Get(string(middleware.UserIDKey))
+	if !exists {
+		Unauthorized(c)
+		return
+	}
+
+	// 步骤 4：调用 Service
+	taskID, err := h.reportService.GenerateReport(c.Request.Context(), &service.GenerateReportRequest{
+		ReportType: reqBody.ReportType,
+		UserID:     userID.(string),
+	})
+	if err != nil {
+		InternalError(c, err.Error())
+		return
+	}
+
+	// 步骤 5：返回成功响应
+	OK(c, gin.H{
+		"task_id":     taskID,
+		"report_type": reqBody.ReportType,
+		"status":      "pending",
+		"message":     "报告生成任务已提交，请稍后查询结果",
+	})
 }
 
 // GetReportStatus GET /api/v1/report/:report_id/status
 // 查询报告生成进度
 func (h *ReportHandler) GetReportStatus(c *gin.Context) {
-	// TODO: Step3 实现
-	// 1. 解析路径参数: report_id
-	// 2. 调用 h.reportService.GetReportStatus(ctx, reportID)
-	// 3. 成功：OK(c, result)
-	// 4. 失败：InternalError(c, err.Error())
-	InternalError(c, "not implemented")
+	reportID := c.Param("report_id")
+	if reportID == "" {
+		BadRequest(c, "report_id is required")
+		return
+	}
+
+	result, err := h.reportService.GetReportStatus(c.Request.Context(), reportID)
+	if err != nil {
+		InternalError(c, err.Error())
+		return
+	}
+
+	OK(c, result)
 }
 
 // GetReport GET /api/v1/report/:report_id
-// 获取报告完整详情
+// 获取报告完整详情（也用于轮询异步报告结果）
 func (h *ReportHandler) GetReport(c *gin.Context) {
-	// TODO: Step2 实现
-	// 1. 解析路径参数: report_id
-	// 2. 从 Context 获取 user_id
-	// 3. 调用 h.reportService.GetReport(ctx, reportID, userID)
-	// 4. 成功：OK(c, result)
-	// 5. 失败：NotFound / InternalError
-	InternalError(c, "not implemented")
+	reportID := c.Param("report_id")
+	if reportID == "" {
+		BadRequest(c, "report_id is required")
+		return
+	}
+
+	// 从 Context 获取 user_id
+	userID, exists := c.Get(string(middleware.UserIDKey))
+	if !exists {
+		Unauthorized(c)
+		return
+	}
+
+	result, err := h.reportService.GetReport(c.Request.Context(), reportID, userID.(string))
+	if err != nil {
+		InternalError(c, err.Error())
+		return
+	}
+
+	OK(c, result)
 }
 
 // GetReportList GET /api/v1/report/list

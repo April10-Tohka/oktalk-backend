@@ -8,14 +8,17 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
+	"pronunciation-correction-system/internal/cache"
 	"pronunciation-correction-system/internal/db"
 	"pronunciation-correction-system/internal/domain"
 	llmPrompts "pronunciation-correction-system/internal/infrastructure/llm"
 	"pronunciation-correction-system/internal/model"
 	"pronunciation-correction-system/internal/pkg/logger"
 	"pronunciation-correction-system/internal/pkg/uuid"
+	"pronunciation-correction-system/internal/worker"
 )
 
 // ===== 请求结构 =====
@@ -127,12 +130,19 @@ type ReportStatusResponse struct {
 	Message  string `json:"message"`
 }
 
-// ReportDetailResponse 报告完整详情
+// ReportDetailResponse 报告完整详情（也作为异步轮询响应）
 type ReportDetailResponse struct {
-	ReportID   string `json:"report_id"`
-	ReportType string `json:"report_type"`
-	UserID     string `json:"user_id"`
-	CreatedAt  string `json:"created_at"`
+	ReportID     string `json:"report_id"`
+	Status       string `json:"status"`
+	Message      string `json:"message,omitempty"`
+	ReportType   string `json:"report_type,omitempty"`
+	UserID       string `json:"user_id,omitempty"`
+	StartDate    string `json:"start_date,omitempty"`
+	EndDate      string `json:"end_date,omitempty"`
+	CreatedAt    string `json:"created_at,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
+	// 完整报告内容（status=success 时填充）
+	Report *ReportMVPResponse `json:"report,omitempty"`
 }
 
 // ReportSummary 报告列表摘要
@@ -180,15 +190,18 @@ type ReportService interface {
 	GetDashboard(ctx context.Context, userID string) (*DashboardResponse, error)
 }
 
-// ===== 空实现 =====
+// ===== Service 实现 =====
 
 // reportServiceImpl Report Service 实现
 type reportServiceImpl struct {
-	repos       *db.Repositories
-	llmProvider domain.LLMProvider
-	ttsProvider domain.TTSProvider
-	ossProvider domain.OSSProvider
-	logger      *slog.Logger
+	repos         *db.Repositories
+	llmProvider   domain.LLMProvider
+	ttsProvider   domain.TTSProvider
+	ossProvider   domain.OSSProvider
+	taskCache     *cache.TaskCache
+	reportCache   *cache.ReportCache
+	workerManager *worker.Manager
+	logger        *slog.Logger
 }
 
 // NewReportService 创建 ReportService
@@ -197,14 +210,20 @@ func NewReportService(
 	llmProvider domain.LLMProvider,
 	ttsProvider domain.TTSProvider,
 	ossProvider domain.OSSProvider,
+	taskCache *cache.TaskCache,
+	reportCache *cache.ReportCache,
+	workerMgr *worker.Manager,
 	logger *slog.Logger,
 ) ReportService {
 	return &reportServiceImpl{
-		repos:       repos,
-		llmProvider: llmProvider,
-		ttsProvider: ttsProvider,
-		ossProvider: ossProvider,
-		logger:      logger,
+		repos:         repos,
+		llmProvider:   llmProvider,
+		ttsProvider:   ttsProvider,
+		ossProvider:   ossProvider,
+		taskCache:     taskCache,
+		reportCache:   reportCache,
+		workerManager: workerMgr,
+		logger:        logger,
 	}
 }
 
@@ -454,28 +473,262 @@ func toIntPtr(v int) *int { return &v }
 func toStringPtr(v string) *string { return &v }
 
 func (s *reportServiceImpl) GenerateReport(ctx context.Context, req *GenerateReportRequest) (string, error) {
-	// TODO: Step3 实现异步任务
-	// 1. 生成 report_id
-	// 2. 创建异步任务（数据统计 → LLM 生成）
-	// 3. 将任务提交到队列
-	// 4. 返回 report_id
-	return "", nil
+	// 步骤 1：基础校验
+	if req == nil {
+		return "", errors.New("generate report request is nil")
+	}
+	if req.UserID == "" {
+		return "", errors.New("user id is empty")
+	}
+
+	// 步骤 2：校验 report_type
+	reportType := strings.TrimSpace(req.ReportType)
+	if reportType == "" {
+		reportType = "weekly"
+	}
+	if reportType != "weekly" && reportType != "monthly" {
+		return "", fmt.Errorf("invalid report_type: %s (must be weekly or monthly)", reportType)
+	}
+
+	// 步骤 3：确定日期范围
+	now := time.Now()
+	var periodStart, periodEnd time.Time
+	switch reportType {
+	case "monthly":
+		periodStart = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+		periodEnd = periodStart.AddDate(0, 1, 0).Add(-time.Nanosecond)
+	default: // weekly
+		weekday := int(now.Weekday())
+		if weekday == 0 {
+			weekday = 7
+		}
+		periodStart = time.Date(now.Year(), now.Month(), now.Day()-weekday+1, 0, 0, 0, 0, now.Location())
+		periodEnd = periodStart.AddDate(0, 0, 7).Add(-time.Nanosecond)
+	}
+
+	// 步骤 4：检查数据量是否足够
+	evalStats, _ := s.repos.PronunciationEvaluation.GetStatsByUserAndDateRange(ctx, req.UserID, periodStart, periodEnd)
+	convStats, _ := s.repos.VoiceConversation.GetStatsByUserAndDateRange(ctx, req.UserID, periodStart, periodEnd)
+	activityCount := 0
+	if evalStats != nil {
+		activityCount += evalStats.TotalCount
+	}
+	if convStats != nil {
+		activityCount += convStats.TotalCount
+	}
+	if activityCount < 3 {
+		return "", fmt.Errorf("数据不足，至少需要 3 条学习记录（当前 %d 条）", activityCount)
+	}
+
+	// 步骤 5：序列化 Payload
+	type reportPayload struct {
+		ReportType string `json:"report_type"`
+		StartDate  string `json:"start_date"`
+		EndDate    string `json:"end_date"`
+		UserID     string `json:"user_id"`
+	}
+	payload, err := json.Marshal(&reportPayload{
+		ReportType: reportType,
+		StartDate:  periodStart.Format("2006-01-02"),
+		EndDate:    periodEnd.Format("2006-01-02"),
+		UserID:     req.UserID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal report payload: %w", err)
+	}
+
+	// 步骤 6：构建 Task 并提交
+	task := &worker.Task{
+		Type:    "report",
+		UserID:  req.UserID,
+		Payload: payload,
+	}
+
+	taskID, err := s.workerManager.SubmitTask(ctx, task)
+	if err != nil {
+		logger.ErrorContext(ctx, "submit report task failed", "error", err)
+		return "", fmt.Errorf("submit task: %w", err)
+	}
+
+	logger.InfoContext(ctx, "report task submitted",
+		"task_id", taskID, "user_id", req.UserID, "type", reportType,
+		"start", periodStart.Format("2006-01-02"), "end", periodEnd.Format("2006-01-02"))
+
+	return taskID, nil
+}
+
+// reportStageDescriptions 报告生成阶段描述
+var reportStageDescriptions = map[string]string{
+	"queued":                     "报告任务已进入队列",
+	"fetching_eval_data":         "正在查询评测数据...",
+	"fetching_chat_data":         "正在查询对话数据...",
+	"analyzing_eval":             "正在分析评测统计...",
+	"analyzing_chat":             "正在分析对话统计...",
+	"calculating_progress":       "正在计算学习进度...",
+	"generating_recommendations": "正在生成学习建议...",
+	"generating_report":          "正在生成完整报告...",
+	"saving":                     "正在保存报告...",
+	"completed":                  "报告生成完成",
 }
 
 func (s *reportServiceImpl) GetReportStatus(ctx context.Context, reportID string) (*ReportStatusResponse, error) {
-	// TODO: Step3 实现
-	// 1. 从缓存/数据库查询报告生成状态
-	// 2. 返回进度信息
-	return nil, nil
+	if reportID == "" {
+		return nil, errors.New("report_id is empty")
+	}
+
+	meta, err := s.taskCache.GetTaskMeta(ctx, reportID)
+	if err != nil {
+		return nil, fmt.Errorf("query task status: %w", err)
+	}
+	if meta == nil {
+		return nil, fmt.Errorf("report task not found: %s", reportID)
+	}
+
+	stage := meta.CurrentStage
+	msg := reportStageDescriptions[stage]
+	if msg == "" {
+		msg = "处理中..."
+	}
+
+	return &ReportStatusResponse{
+		ReportID: reportID,
+		Status:   meta.Status,
+		Message:  msg,
+	}, nil
 }
 
 func (s *reportServiceImpl) GetReport(ctx context.Context, reportID, userID string) (*ReportDetailResponse, error) {
-	// TODO: Step2 实现
-	// 1. 验证用户对该报告的所有权
-	// 2. 查询 learning_reports 表
-	// 3. 解析 JSON 字段（summary, analysis, insights）
-	// 4. 返回完整报告详情
-	return nil, nil
+	if reportID == "" {
+		return nil, errors.New("report_id is empty")
+	}
+
+	// 步骤 1：从缓存查询任务状态
+	meta, err := s.taskCache.GetTaskMeta(ctx, reportID)
+	if err != nil {
+		logger.ErrorContext(ctx, "get report task meta failed", "report_id", reportID, "error", err)
+	}
+
+	// 步骤 2：TaskMeta 存在 → 按状态处理
+	if meta != nil {
+		switch meta.Status {
+		case "pending":
+			stage := meta.CurrentStage
+			if stage == "" {
+				stage = "queued"
+			}
+			return &ReportDetailResponse{
+				ReportID: reportID,
+				Status:   "pending",
+				Message:  reportStageDescriptions[stage],
+			}, nil
+
+		case "processing":
+			stage := meta.CurrentStage
+			msg := reportStageDescriptions[stage]
+			if msg == "" {
+				msg = "正在生成报告..."
+			}
+			return &ReportDetailResponse{
+				ReportID: reportID,
+				Status:   "processing",
+				Message:  msg,
+			}, nil
+
+		case "success":
+			// 从 reportCache 获取完整报告
+			reportData, found, cacheErr := s.reportCache.GetReportResult(ctx, reportID)
+			if cacheErr != nil {
+				logger.ErrorContext(ctx, "get report from cache failed", "error", cacheErr)
+			}
+			if found && reportData != nil {
+				// 将 map 序列化再反序列化为 ReportMVPResponse
+				jsonBytes, _ := json.Marshal(reportData)
+				var mvpResp ReportMVPResponse
+				if parseErr := json.Unmarshal(jsonBytes, &mvpResp); parseErr == nil {
+					return &ReportDetailResponse{
+						ReportID:   reportID,
+						Status:     "success",
+						ReportType: mvpResp.ReportType,
+						StartDate:  mvpResp.PeriodStartDate,
+						EndDate:    mvpResp.PeriodEndDate,
+						CreatedAt:  time.Now().Format(time.RFC3339),
+						Report:     &mvpResp,
+					}, nil
+				}
+			}
+
+			// 缓存未命中 → 降级到数据库
+			return s.getReportFromDB(ctx, reportID, userID)
+
+		case "failed":
+			return &ReportDetailResponse{
+				ReportID:     reportID,
+				Status:       "failed",
+				ErrorMessage: meta.Error,
+				Message:      "报告生成失败，请稍后重试",
+			}, nil
+		}
+	}
+
+	// 步骤 3：TaskMeta 不存在 → 查数据库历史报告
+	return s.getReportFromDB(ctx, reportID, userID)
+}
+
+// getReportFromDB 从数据库获取已生成的历史报告
+func (s *reportServiceImpl) getReportFromDB(ctx context.Context, reportID, userID string) (*ReportDetailResponse, error) {
+	report, err := s.repos.LearningReport.GetByID(ctx, reportID)
+	if err != nil {
+		return nil, fmt.Errorf("report not found: %s", reportID)
+	}
+
+	// 权限检查
+	if userID != "" && report.UserID != userID {
+		return nil, fmt.Errorf("forbidden: report does not belong to user")
+	}
+
+	// 映射 LearningReport → ReportMVPResponse
+	mvpResp := &ReportMVPResponse{
+		ReportID:        report.ID,
+		ReportType:      report.ReportType,
+		PeriodStartDate: report.PeriodStartDate.Format("2006-01-02"),
+		PeriodEndDate:   report.PeriodEndDate.Format("2006-01-02"),
+		ActivityStats: &ActivityStats{
+			ConversationCount: report.TotalConversations,
+			EvaluationCount:   report.TotalEvaluations,
+			TotalMinutes:      report.TotalStudyMinutes,
+		},
+		AbilityRadar: &AbilityRadar{
+			AccuracyScore:  report.AverageAccuracyScore,
+			FluencyScore:   report.AverageFluencyScore,
+			IntegrityScore: report.AverageIntegrityScore,
+		},
+		ProgressStats: &ProgressStats{
+			OverallScoreChange: int(report.ImprovementRate),
+			CurrentScore:       report.AverageEvaluationScore,
+		},
+		DifficultWords: []DifficultWord{},
+	}
+	if report.Recommendations != nil {
+		mvpResp.FullReport = &FullReport{
+			FullText: *report.Recommendations,
+		}
+		if report.Strengths != nil {
+			mvpResp.FullReport.ImprovementAreas = []string(report.Strengths)
+		}
+		if report.Weaknesses != nil {
+			mvpResp.FullReport.Recommendations = []string(report.Weaknesses)
+		}
+	}
+
+	return &ReportDetailResponse{
+		ReportID:   report.ID,
+		Status:     "success",
+		ReportType: report.ReportType,
+		StartDate:  report.PeriodStartDate.Format("2006-01-02"),
+		EndDate:    report.PeriodEndDate.Format("2006-01-02"),
+		CreatedAt:  report.CreatedAt.Format(time.RFC3339),
+		Report:     mvpResp,
+	}, nil
 }
 
 func (s *reportServiceImpl) GetReportList(ctx context.Context, userID string, page, pageSize int) ([]*ReportSummary, int64, error) {
@@ -500,4 +753,290 @@ func (s *reportServiceImpl) GetDashboard(ctx context.Context, userID string) (*D
 	// 3. 计算总学习时长、平均分、分数趋势
 	// 4. 返回统计面板数据
 	return nil, nil
+}
+
+// ===================== ReportTaskProcessor =====================
+
+// reportPayloadData 异步报告任务 payload 反序列化目标
+type reportPayloadData struct {
+	ReportType string `json:"report_type"`
+	StartDate  string `json:"start_date"`
+	EndDate    string `json:"end_date"`
+	UserID     string `json:"user_id"`
+}
+
+// ReportTaskProcessor 实现 worker.TaskProcessor 接口
+type ReportTaskProcessor struct {
+	repos       *db.Repositories
+	llmProvider domain.LLMProvider
+	ttsProvider domain.TTSProvider
+	ossProvider domain.OSSProvider
+	taskCache   *cache.TaskCache
+	logger      *slog.Logger
+}
+
+// NewReportTaskProcessor 创建 ReportTaskProcessor
+func NewReportTaskProcessor(
+	repos *db.Repositories,
+	llm domain.LLMProvider,
+	tts domain.TTSProvider,
+	oss domain.OSSProvider,
+	taskCache *cache.TaskCache,
+	logger *slog.Logger,
+) *ReportTaskProcessor {
+	return &ReportTaskProcessor{
+		repos:       repos,
+		llmProvider: llm,
+		ttsProvider: tts,
+		ossProvider: oss,
+		taskCache:   taskCache,
+		logger:      logger,
+	}
+}
+
+// Process 实现 worker.TaskProcessor 接口
+func (p *ReportTaskProcessor) Process(ctx context.Context, task *worker.Task) (interface{}, string, error) {
+	// 反序列化 payload
+	var payload reportPayloadData
+	if err := json.Unmarshal(task.Payload, &payload); err != nil {
+		return nil, "", fmt.Errorf("unmarshal report payload: %w", err)
+	}
+
+	resultKey := fmt.Sprintf(cache.KeyReportResult, task.ID)
+	reportType := payload.ReportType
+
+	// 解析日期范围
+	periodStart, _ := time.Parse("2006-01-02", payload.StartDate)
+	periodEnd, _ := time.Parse("2006-01-02", payload.EndDate)
+	if periodEnd.IsZero() {
+		periodEnd = periodStart.AddDate(0, 0, 7)
+	}
+
+	// ===== A1: 查询评测数据 =====
+	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "fetching_eval_data")
+
+	evalStats, err := p.repos.PronunciationEvaluation.GetStatsByUserAndDateRange(ctx, task.UserID, periodStart, periodEnd)
+	if err != nil {
+		p.logger.Warn("Report: query eval stats failed, use zeros", slog.String("error", err.Error()))
+		evalStats = &db.EvaluationStats{ProblemWords: make(map[string]int)}
+	}
+
+	// ===== A2: 查询对话数据 =====
+	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "fetching_chat_data")
+
+	convStats, err := p.repos.VoiceConversation.GetStatsByUserAndDateRange(ctx, task.UserID, periodStart, periodEnd)
+	if err != nil {
+		p.logger.Warn("Report: query conv stats failed, use zeros", slog.String("error", err.Error()))
+		convStats = &db.ConversationStats{}
+	}
+
+	// ===== A3: 计算评测统计 =====
+	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "analyzing_eval")
+
+	totalMinutes := convStats.TotalDurationSeconds / 60
+
+	// 高频问题单词 Top 5
+	type wordFreq struct {
+		Word      string
+		Frequency int
+	}
+	var sortedWords []wordFreq
+	for w, f := range evalStats.ProblemWords {
+		sortedWords = append(sortedWords, wordFreq{Word: w, Frequency: f})
+	}
+	sort.Slice(sortedWords, func(i, j int) bool {
+		return sortedWords[i].Frequency > sortedWords[j].Frequency
+	})
+	if len(sortedWords) > 5 {
+		sortedWords = sortedWords[:5]
+	}
+
+	// ===== A4: 计算进步趋势 =====
+	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "calculating_progress")
+
+	var prevStart, prevEnd time.Time
+	switch reportType {
+	case "monthly":
+		prevStart = periodStart.AddDate(0, -1, 0)
+		prevEnd = periodStart
+	default:
+		prevStart = periodStart.AddDate(0, 0, -7)
+		prevEnd = periodStart
+	}
+	prevAvgScore, _ := p.repos.PronunciationEvaluation.GetAverageScoreByUserIDAndDateRange(ctx, task.UserID, prevStart, prevEnd)
+	currentScore := evalStats.AvgOverallScore
+	scoreChange := currentScore - prevAvgScore
+
+	// ===== A5: LLM 生成报告 =====
+	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "generating_report")
+
+	llmStats := &llmPrompts.ReportStats{
+		StartDate:         payload.StartDate,
+		EndDate:           payload.EndDate,
+		ConversationCount: convStats.TotalCount,
+		EvaluationCount:   evalStats.TotalCount,
+		TotalMinutes:      totalMinutes,
+		ActiveDays:        convStats.ActiveDays,
+		AvgAccuracy:       evalStats.AvgAccuracyScore,
+		AvgFluency:        evalStats.AvgFluencyScore,
+		AvgIntegrity:      evalStats.AvgIntegrityScore,
+		AvgOverall:        currentScore,
+		SCount:            evalStats.SLevelCount,
+		ACount:            evalStats.ALevelCount,
+		BCount:            evalStats.BLevelCount,
+		CCount:            evalStats.CLevelCount,
+		PreviousScore:     prevAvgScore,
+		CurrentScore:      currentScore,
+		ScoreChange:       scoreChange,
+		ProblemWords:      evalStats.ProblemWords,
+	}
+
+	systemPrompt, userMsg := llmPrompts.GenerateReportPrompt(llmStats)
+	var reportData llmPrompts.LLMReportData
+
+	llmResponse, llmErr := p.llmProvider.Chat(ctx, systemPrompt, userMsg)
+	if llmErr != nil {
+		p.logger.Warn("Report LLM failed, use defaults", slog.String("error", llmErr.Error()))
+		reportData = llmPrompts.GetDefaultReportData()
+	} else {
+		if parseErr := json.Unmarshal([]byte(llmResponse), &reportData); parseErr != nil {
+			p.logger.Warn("Report LLM JSON parse failed, use defaults", slog.String("error", parseErr.Error()))
+			reportData = llmPrompts.GetDefaultReportData()
+		}
+	}
+
+	// ===== A6: TTS 问题单词 + OSS 上传 =====
+	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "generating_recommendations")
+
+	var difficultWords []DifficultWord
+	for _, wf := range sortedWords {
+		dw := DifficultWord{
+			Word:      wf.Word,
+			Frequency: wf.Frequency,
+		}
+		if p.ttsProvider != nil && p.ossProvider != nil {
+			ttsData, ttsErr := p.ttsProvider.Synthesize(ctx, wf.Word, nil)
+			if ttsErr == nil && len(ttsData) > 0 {
+				ossKey := fmt.Sprintf("report/demo/%s/%s_%s.mp3",
+					task.UserID, wf.Word, time.Now().Format("20060102150405"))
+				audioURL, ossErr := p.ossProvider.UploadBytes(ctx, ossKey, ttsData, "audio/mpeg")
+				if ossErr == nil {
+					dw.DemoAudioURL = audioURL
+				}
+			}
+		}
+		difficultWords = append(difficultWords, dw)
+	}
+
+	// ===== A7: 保存报告到数据库 =====
+	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "saving")
+
+	reportID := task.ID
+	reportModel := &model.LearningReport{
+		ID:                     reportID,
+		UserID:                 task.UserID,
+		ReportType:             reportType,
+		PeriodStartDate:        periodStart,
+		PeriodEndDate:          periodEnd,
+		TotalConversations:     convStats.TotalCount,
+		TotalEvaluations:       evalStats.TotalCount,
+		TotalStudyMinutes:      totalMinutes,
+		AverageEvaluationScore: currentScore,
+		AverageAccuracyScore:   evalStats.AvgAccuracyScore,
+		AverageFluencyScore:    evalStats.AvgFluencyScore,
+		AverageIntegrityScore:  evalStats.AvgIntegrityScore,
+		SLevelCount:            evalStats.SLevelCount,
+		ALevelCount:            evalStats.ALevelCount,
+		BLevelCount:            evalStats.BLevelCount,
+		CLevelCount:            evalStats.CLevelCount,
+		ImprovementRate:        scoreChange,
+		Recommendations:        toStringPtr(reportData.FullText),
+		Strengths:              model.StringArray(reportData.Highlights),
+		Weaknesses:             model.StringArray(reportData.ImprovementAreas),
+	}
+
+	for dbRetry := 0; dbRetry < 3; dbRetry++ {
+		if saveErr := p.repos.LearningReport.Create(ctx, reportModel); saveErr != nil {
+			p.logger.Error("save report db retry", slog.Int("attempt", dbRetry+1), slog.String("error", saveErr.Error()))
+			time.Sleep(time.Duration(dbRetry+1) * 500 * time.Millisecond)
+			continue
+		}
+		break
+	}
+
+	// ===== A8: 构建 ReportMVPResponse 并返回 =====
+	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "completed")
+
+	result := &ReportMVPResponse{
+		ReportID:        reportID,
+		ReportType:      reportType,
+		PeriodStartDate: periodStart.Format("2006-01-02"),
+		PeriodEndDate:   periodEnd.Format("2006-01-02"),
+
+		ActivityStats: &ActivityStats{
+			ConversationCount: convStats.TotalCount,
+			EvaluationCount:   evalStats.TotalCount,
+			TotalMinutes:      totalMinutes,
+			ActiveDays:        convStats.ActiveDays,
+		},
+
+		AbilityRadar: &AbilityRadar{
+			AccuracyScore:  evalStats.AvgAccuracyScore,
+			FluencyScore:   evalStats.AvgFluencyScore,
+			IntegrityScore: evalStats.AvgIntegrityScore,
+			Summary:        reportData.AbilityAnalysis,
+		},
+
+		ProgressStats: &ProgressStats{
+			OverallScoreChange: int(scoreChange),
+			PreviousScore:      prevAvgScore,
+			CurrentScore:       currentScore,
+			Highlights:         reportData.Highlights,
+			LevelImprovement:   reportData.ProgressHighlight,
+		},
+
+		KidFriendlyCard: &KidFriendlyCard{
+			EncouragementText: reportData.EncouragementText,
+			Highlights:        reportData.Highlights,
+			SmallGoal:         reportData.SmallGoal,
+		},
+
+		DifficultWords: difficultWords,
+
+		FullReport: &FullReport{
+			PeriodSummary:     reportData.PeriodSummary,
+			AbilityAnalysis:   reportData.AbilityAnalysis,
+			ProgressHighlight: reportData.ProgressHighlight,
+			ImprovementAreas:  reportData.ImprovementAreas,
+			Recommendations:   reportData.Recommendations,
+			FullText:          reportData.FullText,
+		},
+	}
+	if result.DifficultWords == nil {
+		result.DifficultWords = []DifficultWord{}
+	}
+
+	return result, resultKey, nil
+}
+
+// ===================== ReportResultPersister =====================
+
+// ReportResultPersister 实现 worker.ResultPersister 接口
+type ReportResultPersister struct {
+	logger *slog.Logger
+}
+
+// NewReportResultPersister 创建 ReportResultPersister
+func NewReportResultPersister(logger *slog.Logger) *ReportResultPersister {
+	return &ReportResultPersister{logger: logger}
+}
+
+// SaveResult 将结果持久化
+// ReportTaskProcessor.Process 中已经完成了 DB 写入，这里只做日志记录
+func (p *ReportResultPersister) SaveResult(ctx context.Context, task *worker.Task, result interface{}) error {
+	p.logger.Info("report result persisted (already saved in processor)",
+		slog.String("task_id", task.ID),
+		slog.String("type", task.Type),
+	)
+	return nil
 }

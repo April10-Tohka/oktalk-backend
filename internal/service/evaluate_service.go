@@ -3,16 +3,21 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
+	"time"
 
+	"pronunciation-correction-system/internal/cache"
 	"pronunciation-correction-system/internal/db"
 	"pronunciation-correction-system/internal/domain"
 	llmPrompts "pronunciation-correction-system/internal/infrastructure/llm"
 	"pronunciation-correction-system/internal/model"
 	"pronunciation-correction-system/internal/pkg/logger"
 	"pronunciation-correction-system/internal/pkg/uuid"
+	"pronunciation-correction-system/internal/worker"
 )
 
 // ===== 请求结构 =====
@@ -29,13 +34,12 @@ type EvaluateMVPRequest struct {
 
 // SubmitEvaluationRequest 异步发音评测提交请求
 type SubmitEvaluationRequest struct {
-	AudioData      []byte
-	AudioType      string
-	TextID         string
-	ReferenceText  string
-	Language       string // zh_CN / en_US
-	AssessmentType string // sentence / word / paragraph
-	UserID         string
+	AudioData       []byte
+	AudioType       string
+	TextID          string
+	Category        string // read_word / read_sentence
+	DifficultyLevel string // beginner / intermediate / advanced
+	UserID          string
 }
 
 // EvalHistoryRequest 评测历史查询请求
@@ -97,15 +101,17 @@ type WordDetail struct {
 type EvaluationResultResponse struct {
 	EvalID           string            `json:"eval_id"`
 	Status           string            `json:"status"`
-	TextID           string            `json:"text_id"`
-	ReferenceText    string            `json:"reference_text"`
-	OverallScore     float64           `json:"overall_score"`
-	Scores           *EvalScores       `json:"scores"`
-	DurationMs       int               `json:"duration_ms"`
+	Message          string            `json:"message,omitempty"`
+	TextID           string            `json:"text_id,omitempty"`
+	ReferenceText    string            `json:"reference_text,omitempty"`
+	OverallScore     float64           `json:"overall_score,omitempty"`
+	Scores           *EvalScores       `json:"scores,omitempty"`
+	DurationMs       int               `json:"duration_ms,omitempty"`
 	ProblemWords     []string          `json:"problem_words,omitempty"`
-	DetailedFeedback *DetailedFeedback `json:"detailed_feedback"`
-	ReferenceAudio   string            `json:"reference_audio"`
-	CreatedAt        string            `json:"created_at"`
+	DetailedFeedback *DetailedFeedback `json:"detailed_feedback,omitempty"`
+	ReferenceAudio   string            `json:"reference_audio,omitempty"`
+	CreatedAt        string            `json:"created_at,omitempty"`
+	ErrorMessage     string            `json:"error_message,omitempty"`
 }
 
 // EvalScores 评测分项得分
@@ -167,7 +173,7 @@ type EvaluateService interface {
 	GetReferenceAudio(ctx context.Context, textID string) (*ReferenceAudioResponse, error)
 }
 
-// ===== 空实现 =====
+// ===== Service 实现 =====
 
 // evaluateServiceImpl Evaluate Service 实现
 type evaluateServiceImpl struct {
@@ -176,6 +182,9 @@ type evaluateServiceImpl struct {
 	llmProvider        domain.LLMProvider
 	ttsProvider        domain.TTSProvider
 	ossProvider        domain.OSSProvider
+	taskCache          *cache.TaskCache
+	evalCache          *cache.EvalCache
+	workerManager      *worker.Manager
 	logger             *slog.Logger
 }
 
@@ -186,6 +195,9 @@ func NewEvaluateService(
 	llmProvider domain.LLMProvider,
 	ttsProvider domain.TTSProvider,
 	ossProvider domain.OSSProvider,
+	taskCache *cache.TaskCache,
+	evalCache *cache.EvalCache,
+	workerMgr *worker.Manager,
 	logger *slog.Logger,
 ) EvaluateService {
 	return &evaluateServiceImpl{
@@ -194,6 +206,9 @@ func NewEvaluateService(
 		llmProvider:        llmProvider,
 		ttsProvider:        ttsProvider,
 		ossProvider:        ossProvider,
+		taskCache:          taskCache,
+		evalCache:          evalCache,
+		workerManager:      workerMgr,
 		logger:             logger,
 	}
 }
@@ -475,21 +490,202 @@ func strPtr(s string) *string {
 }
 
 func (s *evaluateServiceImpl) SubmitEvaluation(ctx context.Context, req *SubmitEvaluationRequest) (string, error) {
-	// TODO: Step3 实现异步任务
-	// 1. 生成 eval_id
-	// 2. 创建异步任务（讯飞评测 → LLM 反馈 → TTS 合成）
-	// 3. 将任务提交到队列
-	// 4. 返回 eval_id
-	return "", nil
+	// 步骤 1：基础校验
+	if req == nil {
+		return "", errors.New("submit evaluation request is nil")
+	}
+	if len(req.AudioData) == 0 {
+		return "", errors.New("audio data is empty")
+	}
+	if req.UserID == "" {
+		return "", errors.New("user id is empty")
+	}
+	if req.TextID == "" {
+		return "", errors.New("text_id is required")
+	}
+
+	// 步骤 2：校验 category
+	category := strings.TrimSpace(req.Category)
+	if category == "" {
+		category = "read_sentence"
+	}
+	if category != "read_word" && category != "read_sentence" {
+		return "", fmt.Errorf("invalid category: %s (must be read_word or read_sentence)", category)
+	}
+
+	// 步骤 3：处理默认参数
+	difficultyLevel := strings.TrimSpace(req.DifficultyLevel)
+	if difficultyLevel == "" {
+		difficultyLevel = "beginner"
+	}
+	audioType := strings.ToLower(strings.TrimSpace(req.AudioType))
+	if audioType == "" {
+		audioType = "wav"
+	}
+
+	// 步骤 4：查询朗读文本
+	targetText, ok := textIDMap[req.TextID]
+	if !ok {
+		// TODO: 从数据库查询 text_id
+		return "", fmt.Errorf("text not found: %s", req.TextID)
+	}
+
+	// 步骤 5：WAV → PCM（去掉 44 字节 header）
+	audioData := req.AudioData
+	if audioType == "wav" && len(audioData) > 44 {
+		audioData = audioData[44:]
+	}
+
+	// 步骤 6：序列化 Payload
+	type evalPayload struct {
+		AudioData       []byte `json:"audio_data"`
+		AudioType       string `json:"audio_type"`
+		TextID          string `json:"text_id"`
+		TargetText      string `json:"target_text"`
+		Category        string `json:"category"`
+		DifficultyLevel string `json:"difficulty_level"`
+		UserID          string `json:"user_id"`
+	}
+	payload, err := json.Marshal(&evalPayload{
+		AudioData:       audioData,
+		AudioType:       audioType,
+		TextID:          req.TextID,
+		TargetText:      targetText,
+		Category:        category,
+		DifficultyLevel: difficultyLevel,
+		UserID:          req.UserID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal eval payload: %w", err)
+	}
+
+	// 步骤 7：构建 Task 并提交
+	task := &worker.Task{
+		Type:    "evaluate",
+		UserID:  req.UserID,
+		Payload: payload,
+	}
+
+	taskID, err := s.workerManager.SubmitTask(ctx, task)
+	if err != nil {
+		logger.ErrorContext(ctx, "submit eval task failed", "error", err)
+		return "", fmt.Errorf("submit task: %w", err)
+	}
+
+	// 步骤 8：更新学习进度（占位）
+	logger.InfoContext(ctx, "eval task submitted",
+		"task_id", taskID, "user_id", req.UserID, "text_id", req.TextID)
+
+	return taskID, nil
+}
+
+// evalStageDescriptions 评测阶段描述
+var evalStageDescriptions = map[string]string{
+	"queued":     "评测任务已进入队列，等待处理",
+	"evaluating": "正在分析音素...",
+	"analyzing":  "正在生成反馈...",
+	"tts":        "正在合成音频...",
+	"oss":        "正在上传音频...",
+	"db":         "正在保存记录...",
+	"completed":  "评测完成",
 }
 
 func (s *evaluateServiceImpl) GetEvaluationResult(ctx context.Context, evalID string) (*EvaluationResultResponse, error) {
-	// TODO: Step3 实现
-	// 1. 从缓存/数据库查询任务状态
-	// 2. 如果完成，返回完整评测结果
-	// 3. 如果处理中，返回进度信息
-	// 4. 如果失败，返回错误信息
-	return nil, nil
+	if evalID == "" {
+		return nil, errors.New("eval_id is empty")
+	}
+
+	// 步骤 1：从缓存查询任务状态
+	meta, err := s.taskCache.GetTaskMeta(ctx, evalID)
+	if err != nil {
+		logger.ErrorContext(ctx, "get eval task meta failed", "eval_id", evalID, "error", err)
+		return nil, fmt.Errorf("query task status: %w", err)
+	}
+	if meta == nil {
+		return nil, fmt.Errorf("evaluation not found: %s", evalID)
+	}
+
+	// 步骤 2：根据状态构建响应
+	switch meta.Status {
+	case "pending":
+		stage := meta.CurrentStage
+		if stage == "" {
+			stage = "queued"
+		}
+		return &EvaluationResultResponse{
+			EvalID:  evalID,
+			Status:  "pending",
+			Message: evalStageDescriptions[stage],
+		}, nil
+
+	case "processing":
+		stage := meta.CurrentStage
+		msg := evalStageDescriptions[stage]
+		if msg == "" {
+			msg = "正在处理中..."
+		}
+		return &EvaluationResultResponse{
+			EvalID:  evalID,
+			Status:  "processing",
+			Message: msg,
+		}, nil
+
+	case "success":
+		// 从 evalCache 获取完整结果
+		resultKey := meta.ResultKey
+		var resultEvalID string
+		fmt.Sscanf(resultKey, "evaluate:result:%s", &resultEvalID)
+		if resultEvalID == "" {
+			resultEvalID = evalID
+		}
+
+		evalResult, found, cacheErr := s.evalCache.GetEvalResult(ctx, resultEvalID)
+		if cacheErr != nil {
+			logger.ErrorContext(ctx, "get eval result from cache failed", "eval_id", evalID, "error", cacheErr)
+			return nil, fmt.Errorf("get eval result: %w", cacheErr)
+		}
+		if !found {
+			return nil, fmt.Errorf("eval result not found in cache for: %s", evalID)
+		}
+
+		// 构建单词详情
+		var problemWords []string
+		for _, wd := range evalResult.WordDetails {
+			if wd.IsProblem {
+				problemWords = append(problemWords, wd.Word)
+			}
+		}
+
+		resp := &EvaluationResultResponse{
+			EvalID:        evalID,
+			Status:        "success",
+			TextID:        evalResult.TextID,
+			ReferenceText: evalResult.TargetText,
+			OverallScore:  evalResult.OverallScore,
+			Scores: &EvalScores{
+				Pronunciation: evalResult.AccuracyScore,
+				Fluency:       evalResult.FluencyScore,
+				Integrity:     evalResult.IntegrityScore,
+			},
+			ProblemWords:   problemWords,
+			ReferenceAudio: evalResult.AudioURL,
+			CreatedAt:      time.Unix(evalResult.CreatedAt, 0).Format(time.RFC3339),
+		}
+
+		return resp, nil
+
+	case "failed":
+		return &EvaluationResultResponse{
+			EvalID:       evalID,
+			Status:       "failed",
+			ErrorMessage: meta.Error,
+			Message:      "评测处理失败，请重试或联系支持",
+		}, nil
+
+	default:
+		logger.ErrorContext(ctx, "unknown eval task status", "eval_id", evalID, "status", meta.Status)
+		return nil, fmt.Errorf("unknown task status: %s", meta.Status)
+	}
 }
 
 func (s *evaluateServiceImpl) GetEvaluationHistory(ctx context.Context, req *EvalHistoryRequest) ([]*EvalSummary, int64, error) {
@@ -522,4 +718,267 @@ func (s *evaluateServiceImpl) GetReferenceAudio(ctx context.Context, textID stri
 	// 2. 查询或生成标准发音音频（TTS）
 	// 3. 返回音频 URL
 	return nil, nil
+}
+
+// ===================== EvalTaskProcessor =====================
+
+// evalPayloadData 异步评测任务 payload 反序列化目标
+type evalPayloadData struct {
+	AudioData       []byte `json:"audio_data"`
+	AudioType       string `json:"audio_type"`
+	TextID          string `json:"text_id"`
+	TargetText      string `json:"target_text"`
+	Category        string `json:"category"`
+	DifficultyLevel string `json:"difficulty_level"`
+	UserID          string `json:"user_id"`
+}
+
+// EvalTaskProcessor 实现 worker.TaskProcessor 接口
+type EvalTaskProcessor struct {
+	evaluationProvider domain.EvaluationProvider
+	llmProvider        domain.LLMProvider
+	ttsProvider        domain.TTSProvider
+	ossProvider        domain.OSSProvider
+	repos              *db.Repositories
+	taskCache          *cache.TaskCache
+	logger             *slog.Logger
+}
+
+// NewEvalTaskProcessor 创建 EvalTaskProcessor
+func NewEvalTaskProcessor(
+	eval domain.EvaluationProvider,
+	llm domain.LLMProvider,
+	tts domain.TTSProvider,
+	oss domain.OSSProvider,
+	repos *db.Repositories,
+	taskCache *cache.TaskCache,
+	logger *slog.Logger,
+) *EvalTaskProcessor {
+	return &EvalTaskProcessor{
+		evaluationProvider: eval,
+		llmProvider:        llm,
+		ttsProvider:        tts,
+		ossProvider:        oss,
+		repos:              repos,
+		taskCache:          taskCache,
+		logger:             logger,
+	}
+}
+
+// Process 实现 worker.TaskProcessor 接口
+// 返回: (*cache.EvalResult, resultKey, error)
+func (p *EvalTaskProcessor) Process(ctx context.Context, task *worker.Task) (interface{}, string, error) {
+	// 反序列化 payload
+	var payload evalPayloadData
+	if err := json.Unmarshal(task.Payload, &payload); err != nil {
+		return nil, "", fmt.Errorf("unmarshal eval payload: %w", err)
+	}
+
+	resultKey := fmt.Sprintf(cache.KeyEvalResult, task.ID)
+	targetText := payload.TargetText
+	category := payload.Category
+
+	// ===== A1: 讯飞语音评测 =====
+	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "evaluating")
+
+	var evalResult *domain.EvaluationResult
+	var evalErr error
+	for retry := 0; retry < 3; retry++ {
+		evalResult, evalErr = p.evaluationProvider.Assess(ctx, targetText, payload.AudioData, category)
+		if evalErr == nil {
+			break
+		}
+		p.logger.Warn("Evaluation retry", slog.Int("attempt", retry+1), slog.String("error", evalErr.Error()))
+		time.Sleep(time.Duration(retry+1) * time.Second)
+	}
+	if evalErr != nil {
+		return nil, resultKey, fmt.Errorf("[evaluating] %w", evalErr)
+	}
+
+	// ===== A2: 后处理和分析评测结果 =====
+	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "analyzing")
+
+	score := evalResult.TotalScore
+	feedbackLevel := calculateFeedbackLevel(ctx, p.repos, score)
+
+	var problemWords []string
+	var worstWord string
+	var worstWordScore float64 = 100
+	wordDetails := make([]cache.EvalWordDetail, 0, len(evalResult.Words))
+
+	for _, w := range evalResult.Words {
+		isProblem := w.Score < 60
+		wordDetails = append(wordDetails, cache.EvalWordDetail{
+			Word:      w.Word,
+			Score:     w.Score,
+			IsProblem: isProblem,
+		})
+		if isProblem {
+			problemWords = append(problemWords, w.Word)
+		}
+		if w.Score < worstWordScore {
+			worstWordScore = w.Score
+			worstWord = w.Word
+		}
+	}
+
+	// ===== A3: LLM 生成分级反馈文本 =====
+	systemPrompt, userMessage := buildPromptByLevel(feedbackLevel, targetText, score, worstWord, worstWordScore)
+	feedbackText, llmErr := p.llmProvider.Chat(ctx, systemPrompt, userMessage)
+	if llmErr != nil {
+		p.logger.Warn("Eval LLM failed, using fallback", slog.String("error", llmErr.Error()))
+		feedbackText = levelTextMap[feedbackLevel]
+	}
+	if feedbackText == "" {
+		feedbackText = levelTextMap[feedbackLevel]
+	}
+
+	// ===== A4: TTS 合成反馈音频 =====
+	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "tts")
+
+	var feedbackAudio []byte
+	var ttsErr error
+	for retry := 0; retry < 2; retry++ {
+		feedbackAudio, ttsErr = p.ttsProvider.Synthesize(ctx, feedbackText, nil)
+		if ttsErr == nil {
+			break
+		}
+		p.logger.Warn("Eval TTS feedback retry", slog.Int("attempt", retry+1), slog.String("error", ttsErr.Error()))
+		time.Sleep(time.Duration(retry+1) * 500 * time.Millisecond)
+	}
+	if ttsErr != nil {
+		p.logger.Error("Eval TTS feedback failed", slog.String("error", ttsErr.Error()))
+	}
+
+	// ===== A5: 条件生成示范音频 =====
+	var demoAudioData []byte
+	var demoType, demoText string
+
+	switch feedbackLevel {
+	case "A", "B":
+		if worstWord != "" {
+			demoType = "word"
+			demoText = worstWord
+			demoAudioData, _ = p.ttsProvider.Synthesize(ctx, worstWord, nil)
+		}
+	case "C":
+		demoType = "sentence"
+		demoText = targetText
+		demoAudioData, _ = p.ttsProvider.Synthesize(ctx, targetText, nil)
+	}
+
+	// ===== A6: 上传音频到 OSS =====
+	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "oss")
+
+	evalID := task.ID
+	var feedbackAudioURL, demoAudioURL string
+
+	if p.ossProvider != nil {
+		if len(feedbackAudio) > 0 {
+			fbKey := fmt.Sprintf("evaluate/%s/feedback_%s.mp3", evalID, uuid.New())
+			if url, uploadErr := p.ossProvider.UploadAudio(ctx, fbKey, feedbackAudio); uploadErr != nil {
+				p.logger.Error("upload eval feedback audio failed", slog.String("error", uploadErr.Error()))
+			} else {
+				feedbackAudioURL = url
+			}
+		}
+		if len(demoAudioData) > 0 {
+			demoKey := fmt.Sprintf("evaluate/%s/demo_%s.mp3", evalID, uuid.New())
+			if url, uploadErr := p.ossProvider.UploadAudio(ctx, demoKey, demoAudioData); uploadErr != nil {
+				p.logger.Error("upload eval demo audio failed", slog.String("error", uploadErr.Error()))
+			} else {
+				demoAudioURL = url
+			}
+		}
+	}
+
+	// ===== A7: 保存评测结果到数据库 =====
+	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "db")
+
+	if p.repos != nil {
+		evaluation := &model.PronunciationEvaluation{
+			ID:               evalID,
+			UserID:           task.UserID,
+			TargetText:       targetText,
+			OverallScore:     int(score),
+			AccuracyScore:    int(evalResult.Accuracy),
+			FluencyScore:     int(evalResult.Fluency),
+			IntegrityScore:   int(evalResult.Completeness),
+			FeedbackLevel:    feedbackLevel,
+			FeedbackText:     strPtr(feedbackText),
+			FeedbackAudioURL: strPtr(feedbackAudioURL),
+			ProblemWords:     model.StringArray(problemWords),
+			DifficultyLevel:  payload.DifficultyLevel,
+			Status:           "completed",
+		}
+		if demoType == "sentence" && demoAudioURL != "" {
+			evaluation.DemoSentenceAudioURL = strPtr(demoAudioURL)
+		}
+		if demoType == "word" && worstWord != "" && demoAudioURL != "" {
+			evaluation.ProblemWordAudioURLs = model.StringMap{worstWord: demoAudioURL}
+		}
+
+		for dbRetry := 0; dbRetry < 3; dbRetry++ {
+			if saveErr := p.repos.PronunciationEvaluation.Create(ctx, evaluation); saveErr != nil {
+				p.logger.Error("save eval db retry", slog.Int("attempt", dbRetry+1), slog.String("error", saveErr.Error()))
+				time.Sleep(time.Duration(dbRetry+1) * 500 * time.Millisecond)
+				continue
+			}
+			break
+		}
+	}
+
+	// ===== A8: 更新学习统计（占位） =====
+	p.logger.Info("eval completion progress updated (placeholder)",
+		slog.String("task_id", task.ID),
+		slog.String("user_id", task.UserID),
+		slog.Float64("score", score),
+	)
+
+	// ===== A9: 构建结果 =====
+	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "completed")
+
+	result := &cache.EvalResult{
+		EvalID:         evalID,
+		UserID:         task.UserID,
+		TextID:         payload.TextID,
+		TargetText:     targetText,
+		OverallScore:   score,
+		AccuracyScore:  evalResult.Accuracy,
+		FluencyScore:   evalResult.Fluency,
+		IntegrityScore: evalResult.Completeness,
+		FeedbackLevel:  feedbackLevel,
+		FeedbackText:   feedbackText,
+		AudioURL:       feedbackAudioURL,
+		DemoAudioURL:   demoAudioURL,
+		DemoType:       demoType,
+		DemoText:       demoText,
+		ProblemWords:   problemWords,
+		WordDetails:    wordDetails,
+		CreatedAt:      time.Now().Unix(),
+	}
+
+	return result, resultKey, nil
+}
+
+// ===================== EvalResultPersister =====================
+
+// EvalResultPersister 实现 worker.ResultPersister 接口
+type EvalResultPersister struct {
+	logger *slog.Logger
+}
+
+// NewEvalResultPersister 创建 EvalResultPersister
+func NewEvalResultPersister(logger *slog.Logger) *EvalResultPersister {
+	return &EvalResultPersister{logger: logger}
+}
+
+// SaveResult 将结果持久化到数据库
+// EvalTaskProcessor.Process 中已经完成了 DB 写入，这里只做日志记录
+func (p *EvalResultPersister) SaveResult(ctx context.Context, task *worker.Task, result interface{}) error {
+	p.logger.Info("eval result persisted (already saved in processor)",
+		slog.String("task_id", task.ID),
+		slog.String("type", task.Type),
+	)
+	return nil
 }

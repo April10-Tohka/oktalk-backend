@@ -386,28 +386,52 @@ You: "Wonderful! I'm happy too! Why are you happy today?"
 			aiAudioPtr = &aiAudioURL
 		}
 
+		var turnID = 1
+		var nextSeq = 1
+		if maxTurn, err := s.messageRepo.GetMaxTurnID(ctx, conversationID); err == nil {
+			turnID = maxTurn + 1
+		} else {
+			logger.ErrorContext(ctx, "chat mvp get max turn id failed", "error", err)
+		}
+		if seq, err := s.messageRepo.GetNextSequenceNumber(ctx, conversationID); err == nil {
+			nextSeq = seq
+		} else {
+			logger.ErrorContext(ctx, "chat mvp get next seq failed", "error", err)
+		}
+
 		messages := []*model.ConversationMessage{
 			{
 				ID:             userMsgID,
 				ConversationID: conversationID,
+				TurnID:         turnID,
 				SenderType:     "user",
 				MessageText:    userText,
 				AudioURL:       userAudioPtr,
 				AudioDuration:  userDuration,
-				SequenceNumber: 1,
+				SequenceNumber: nextSeq,
 			},
 			{
 				ID:             aiMsgID,
 				ConversationID: conversationID,
+				TurnID:         turnID,
 				SenderType:     "ai",
 				MessageText:    replyText,
 				AudioURL:       aiAudioPtr,
-				SequenceNumber: 2,
+				SequenceNumber: nextSeq + 1,
 			},
 		}
 		if saveErr := s.messageRepo.BatchCreate(ctx, messages); saveErr != nil {
 			logger.ErrorContext(ctx, "chat mvp save messages failed", "error", saveErr)
 		}
+
+		// 获取当前会话状态，更新消息数和时长
+		var currentMsgCount = 0
+		var currentDuration = 0
+		if existingConv, err := s.conversationRepo.GetByID(ctx, conversationID); err == nil && existingConv != nil {
+			currentMsgCount = existingConv.MessageCount
+			currentDuration = existingConv.DurationSeconds
+		}
+
 		// 更新会话记录
 		conversation := &model.VoiceConversation{
 			ID:               conversationID,
@@ -415,9 +439,9 @@ You: "Wonderful! I'm happy too! Why are you happy today?"
 			Topic:            "General",
 			DifficultyLevel:  difficultyLevel,
 			ConversationType: conversationType,
-			MessageCount:     2,
-			DurationSeconds:  asrResult.Duration,
-			Status:           "completed",
+			MessageCount:     currentMsgCount + 2,
+			DurationSeconds:  currentDuration + asrResult.Duration,
+			Status:           "active",
 		}
 		if saveErr := s.conversationRepo.Update(ctx, conversation); saveErr != nil {
 			logger.ErrorContext(ctx, "chat mvp save conversation failed", "error", saveErr)
