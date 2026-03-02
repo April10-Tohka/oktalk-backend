@@ -25,15 +25,16 @@ func NewXFEvaluationAdapter(cfg config.XunFeiConfig) *XFEvaluationAdapter {
 }
 
 // Assess 执行语音评测
-func (a *XFEvaluationAdapter) Assess(ctx context.Context, text string, audioData []byte) (*domain.EvaluationResult, error) {
+func (a *XFEvaluationAdapter) Assess(ctx context.Context, text string, audioData []byte, category string) (*domain.EvaluationResult, error) {
 	logger.InfoContext(ctx, "xf evaluation: starting assess",
 		"text_length", len(text),
-		"audio_bytes", len(audioData))
+		"audio_bytes", len(audioData),
+		"category", category)
 
 	req := &speechAssessRequest{
 		Text:      text,
 		AudioData: audioData,
-		Category:  "read_sentence",
+		Category:  category,
 		Language:  "en_vip",
 	}
 

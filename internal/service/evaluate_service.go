@@ -220,7 +220,7 @@ func (s *evaluateServiceImpl) EvaluateMVP(ctx context.Context, req *EvaluateMVPR
 	logger.InfoContext(ctx, "evaluate mvp start", "text_id", req.TextID, "target_text", targetText)
 
 	// ─── 2. 讯飞语音评测 ───
-	evalResult, err := s.evaluationProvider.Assess(ctx, targetText, req.AudioData)
+	evalResult, err := s.evaluationProvider.Assess(ctx, targetText, req.AudioData, req.Category)
 	if err != nil {
 		logger.ErrorContext(ctx, "evaluate mvp assess failed", "error", err)
 		return nil, fmt.Errorf("speech assessment failed: %w", err)

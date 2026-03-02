@@ -7,7 +7,7 @@ import "context"
 type EvaluationProvider interface {
 	// Assess 执行语音评测
 	// text: 评测目标文本, audioData: 音频二进制数据
-	Assess(ctx context.Context, text string, audioData []byte) (*EvaluationResult, error)
+	Assess(ctx context.Context, text string, audioData []byte, category string) (*EvaluationResult, error)
 
 	// Close 关闭客户端，释放资源
 	Close() error

@@ -133,6 +133,7 @@ type ChatService interface {
 	// ChatMVP 同步语音对话 MVP（ASR → LLM → TTS）
 	ChatMVP(ctx context.Context, req *ChatMVPRequest) ([]byte, error)
 
+	// StartSession 创建新的对话会话
 	StartSession(ctx context.Context, req *StartSessionRequest) (*StartSessionResponse, error)
 
 	// SubmitChat 提交异步语音对话任务
