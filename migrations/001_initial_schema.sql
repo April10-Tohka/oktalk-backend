@@ -255,3 +255,48 @@ VALUES
     ('set_009', 'default_tts_voice', 'longanyang', 'string', '默认TTS音色', TRUE),
     ('set_010', 'default_llm_model', 'qwen-plus', 'string', '默认LLM模型', TRUE)
 ON DUPLICATE KEY UPDATE `updated_at` = CURRENT_TIMESTAMP;
+
+
+
+-- 1. 修改 users 表
+ALTER TABLE users
+    DROP COLUMN IF EXISTS password_hash,
+    ADD COLUMN status          VARCHAR(20)  NOT NULL DEFAULT 'active'
+        COMMENT '账户状态: active/banned/deactivated',
+    ADD COLUMN register_source VARCHAR(20)  NOT NULL DEFAULT 'sms'
+        COMMENT '注册来源: sms/wechat';
+
+-- 2. 新增微信绑定表
+CREATE TABLE user_wechat_bindings (
+    id                  VARCHAR(36)  NOT NULL PRIMARY KEY COMMENT '主键UUID',
+    user_id             VARCHAR(36)  NOT NULL                COMMENT '关联用户ID',
+    open_id             VARCHAR(100) NOT NULL                COMMENT '微信App OpenID',
+    union_id            VARCHAR(100) DEFAULT NULL            COMMENT '微信开放平台UnionID',
+    wechat_nickname     VARCHAR(100) DEFAULT NULL            COMMENT '微信昵称快照',
+    wechat_avatar_url   VARCHAR(500) DEFAULT NULL            COMMENT '微信头像快照',
+    created_at          TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uk_user_id  (user_id),
+    UNIQUE KEY uk_open_id  (open_id),
+    UNIQUE KEY uk_union_id (union_id),
+    CONSTRAINT fk_wechat_user FOREIGN KEY (user_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='微信绑定信息表';
+
+-- 3. 新增登录日志表
+CREATE TABLE user_login_logs (
+    id           VARCHAR(36)  NOT NULL PRIMARY KEY COMMENT '主键UUID',
+    user_id      VARCHAR(36)  NOT NULL              COMMENT '用户ID（登录失败时可为unknown）',
+    login_type   VARCHAR(20)  NOT NULL              COMMENT '登录类型: sms/wechat/token_refresh',
+    result       VARCHAR(20)  NOT NULL              COMMENT '结果: success/failed',
+    fail_reason  VARCHAR(200) DEFAULT NULL          COMMENT '失败原因',
+    ip           VARCHAR(45)  NOT NULL              COMMENT '客户端IP（支持IPv6）',
+    platform     VARCHAR(20)  DEFAULT NULL          COMMENT '平台: ios/android/web',
+    device_id    VARCHAR(100) DEFAULT NULL          COMMENT '设备ID',
+    user_agent   VARCHAR(500) DEFAULT NULL          COMMENT 'User-Agent',
+    created_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_user_id   (user_id),
+    INDEX idx_created_at (created_at),
+    INDEX idx_ip        (ip)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='登录日志表';
