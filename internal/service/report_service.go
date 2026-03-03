@@ -520,18 +520,26 @@ func (s *reportServiceImpl) GenerateReport(ctx context.Context, req *GenerateRep
 		return "", fmt.Errorf("数据不足，至少需要 3 条学习记录（当前 %d 条）", activityCount)
 	}
 
-	// 步骤 5：序列化 Payload
-	type reportPayload struct {
-		ReportType string `json:"report_type"`
-		StartDate  string `json:"start_date"`
-		EndDate    string `json:"end_date"`
-		UserID     string `json:"user_id"`
+	// 步骤 5: 生成报告ID 并预先落库
+	reportID := uuid.New()
+	if s.repos != nil {
+		reportModel := &model.LearningReport{
+			ID:         reportID,
+			UserID:     req.UserID,
+			ReportType: reportType,
+		}
+		if err := s.repos.LearningReport.Create(ctx, reportModel); err != nil {
+			return "", fmt.Errorf("create report model: %w", err)
+		}
 	}
-	payload, err := json.Marshal(&reportPayload{
+
+	// 步骤 5：序列化 Payload
+	payload, err := json.Marshal(&reportPayloadData{
 		ReportType: reportType,
 		StartDate:  periodStart.Format("2006-01-02"),
 		EndDate:    periodEnd.Format("2006-01-02"),
 		UserID:     req.UserID,
+		ReportID:   reportID,
 	})
 	if err != nil {
 		return "", fmt.Errorf("marshal report payload: %w", err)
@@ -539,9 +547,10 @@ func (s *reportServiceImpl) GenerateReport(ctx context.Context, req *GenerateRep
 
 	// 步骤 6：构建 Task 并提交
 	task := &worker.Task{
-		Type:    "report",
-		UserID:  req.UserID,
-		Payload: payload,
+		Type:     "report",
+		UserID:   req.UserID,
+		Payload:  payload,
+		DomainID: reportID,
 	}
 
 	taskID, err := s.workerManager.SubmitTask(ctx, task)
@@ -763,6 +772,7 @@ type reportPayloadData struct {
 	StartDate  string `json:"start_date"`
 	EndDate    string `json:"end_date"`
 	UserID     string `json:"user_id"`
+	ReportID   string `json:"report_id"`
 }
 
 // ReportTaskProcessor 实现 worker.TaskProcessor 接口
@@ -801,8 +811,8 @@ func (p *ReportTaskProcessor) Process(ctx context.Context, task *worker.Task) (i
 	if err := json.Unmarshal(task.Payload, &payload); err != nil {
 		return nil, "", fmt.Errorf("unmarshal report payload: %w", err)
 	}
-
-	resultKey := fmt.Sprintf(cache.KeyReportResult, task.ID)
+	reportID := payload.ReportID
+	resultKey := fmt.Sprintf(cache.KeyReportResult, reportID)
 	reportType := payload.ReportType
 
 	// 解析日期范围
@@ -931,37 +941,64 @@ func (p *ReportTaskProcessor) Process(ctx context.Context, task *worker.Task) (i
 	// ===== A7: 保存报告到数据库 =====
 	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "saving")
 
-	reportID := task.ID
-	reportModel := &model.LearningReport{
-		ID:                     reportID,
-		UserID:                 task.UserID,
-		ReportType:             reportType,
-		PeriodStartDate:        periodStart,
-		PeriodEndDate:          periodEnd,
-		TotalConversations:     convStats.TotalCount,
-		TotalEvaluations:       evalStats.TotalCount,
-		TotalStudyMinutes:      totalMinutes,
-		AverageEvaluationScore: currentScore,
-		AverageAccuracyScore:   evalStats.AvgAccuracyScore,
-		AverageFluencyScore:    evalStats.AvgFluencyScore,
-		AverageIntegrityScore:  evalStats.AvgIntegrityScore,
-		SLevelCount:            evalStats.SLevelCount,
-		ALevelCount:            evalStats.ALevelCount,
-		BLevelCount:            evalStats.BLevelCount,
-		CLevelCount:            evalStats.CLevelCount,
-		ImprovementRate:        scoreChange,
-		Recommendations:        toStringPtr(reportData.FullText),
-		Strengths:              model.StringArray(reportData.Highlights),
-		Weaknesses:             model.StringArray(reportData.ImprovementAreas),
-	}
+	if p.repos != nil {
+		report, err := p.repos.LearningReport.GetByID(ctx, reportID)
+		if err == nil && report != nil {
+			report.PeriodStartDate = periodStart
+			report.PeriodEndDate = periodEnd
+			report.TotalConversations = convStats.TotalCount
+			report.TotalEvaluations = evalStats.TotalCount
+			report.TotalStudyMinutes = totalMinutes
+			report.AverageEvaluationScore = currentScore
+			report.AverageAccuracyScore = evalStats.AvgAccuracyScore
+			report.AverageFluencyScore = evalStats.AvgFluencyScore
+			report.AverageIntegrityScore = evalStats.AvgIntegrityScore
+			report.SLevelCount = evalStats.SLevelCount
+			report.ALevelCount = evalStats.ALevelCount
+			report.BLevelCount = evalStats.BLevelCount
+			report.CLevelCount = evalStats.CLevelCount
+			report.ImprovementRate = scoreChange
+			report.Recommendations = toStringPtr(reportData.FullText)
+			report.Strengths = model.StringArray(reportData.Highlights)
+			report.Weaknesses = model.StringArray(reportData.ImprovementAreas)
+			if updateErr := p.repos.LearningReport.Update(ctx, report); updateErr != nil {
+				p.logger.Error("update report db failed", slog.String("error", updateErr.Error()))
+			}
+		} else {
+			// Fallback: create if missing
+			reportModel := &model.LearningReport{
+				ID:                     reportID,
+				UserID:                 task.UserID,
+				ReportType:             reportType,
+				PeriodStartDate:        periodStart,
+				PeriodEndDate:          periodEnd,
+				TotalConversations:     convStats.TotalCount,
+				TotalEvaluations:       evalStats.TotalCount,
+				TotalStudyMinutes:      totalMinutes,
+				AverageEvaluationScore: currentScore,
+				AverageAccuracyScore:   evalStats.AvgAccuracyScore,
+				AverageFluencyScore:    evalStats.AvgFluencyScore,
+				AverageIntegrityScore:  evalStats.AvgIntegrityScore,
+				SLevelCount:            evalStats.SLevelCount,
+				ALevelCount:            evalStats.ALevelCount,
+				BLevelCount:            evalStats.BLevelCount,
+				CLevelCount:            evalStats.CLevelCount,
+				ImprovementRate:        scoreChange,
+				Recommendations:        toStringPtr(reportData.FullText),
+				Strengths:              model.StringArray(reportData.Highlights),
+				Weaknesses:             model.StringArray(reportData.ImprovementAreas),
+			}
 
-	for dbRetry := 0; dbRetry < 3; dbRetry++ {
-		if saveErr := p.repos.LearningReport.Create(ctx, reportModel); saveErr != nil {
-			p.logger.Error("save report db retry", slog.Int("attempt", dbRetry+1), slog.String("error", saveErr.Error()))
-			time.Sleep(time.Duration(dbRetry+1) * 500 * time.Millisecond)
-			continue
+			for dbRetry := 0; dbRetry < 3; dbRetry++ {
+				if saveErr := p.repos.LearningReport.Create(ctx, reportModel); saveErr != nil {
+					p.logger.Error("save report db retry", slog.Int("attempt", dbRetry+1), slog.String("error", saveErr.Error()))
+					time.Sleep(time.Duration(dbRetry+1) * 500 * time.Millisecond)
+					continue
+				}
+				break
+			}
 		}
-		break
+
 	}
 
 	// ===== A8: 构建 ReportMVPResponse 并返回 =====

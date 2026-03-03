@@ -536,17 +536,23 @@ func (s *evaluateServiceImpl) SubmitEvaluation(ctx context.Context, req *SubmitE
 		audioData = audioData[44:]
 	}
 
-	// 步骤 6：序列化 Payload
-	type evalPayload struct {
-		AudioData       []byte `json:"audio_data"`
-		AudioType       string `json:"audio_type"`
-		TextID          string `json:"text_id"`
-		TargetText      string `json:"target_text"`
-		Category        string `json:"category"`
-		DifficultyLevel string `json:"difficulty_level"`
-		UserID          string `json:"user_id"`
+	// 步骤 6 生成对应evalution_id 并预先落库
+	evalID := uuid.New()
+	if s.repos != nil {
+		if err := s.repos.PronunciationEvaluation.Create(ctx, &model.PronunciationEvaluation{
+			ID:              evalID,
+			UserID:          req.UserID,
+			TargetText:      targetText,
+			DifficultyLevel: difficultyLevel,
+			Status:          "pending",
+		}); err != nil {
+			return "", fmt.Errorf("create eval record: %w", err)
+		}
 	}
-	payload, err := json.Marshal(&evalPayload{
+
+	// 步骤 7：序列化 Payload
+
+	payload, err := json.Marshal(&evalPayloadData{
 		AudioData:       audioData,
 		AudioType:       audioType,
 		TextID:          req.TextID,
@@ -554,6 +560,7 @@ func (s *evaluateServiceImpl) SubmitEvaluation(ctx context.Context, req *SubmitE
 		Category:        category,
 		DifficultyLevel: difficultyLevel,
 		UserID:          req.UserID,
+		EvaluationID:    evalID,
 	})
 	if err != nil {
 		return "", fmt.Errorf("marshal eval payload: %w", err)
@@ -561,9 +568,10 @@ func (s *evaluateServiceImpl) SubmitEvaluation(ctx context.Context, req *SubmitE
 
 	// 步骤 7：构建 Task 并提交
 	task := &worker.Task{
-		Type:    "evaluate",
-		UserID:  req.UserID,
-		Payload: payload,
+		Type:     "evaluate",
+		UserID:   req.UserID,
+		Payload:  payload,
+		DomainID: evalID,
 	}
 
 	taskID, err := s.workerManager.SubmitTask(ctx, task)
@@ -731,6 +739,7 @@ type evalPayloadData struct {
 	Category        string `json:"category"`
 	DifficultyLevel string `json:"difficulty_level"`
 	UserID          string `json:"user_id"`
+	EvaluationID    string `json:"evaluation_id"`
 }
 
 // EvalTaskProcessor 实现 worker.TaskProcessor 接口
@@ -774,7 +783,8 @@ func (p *EvalTaskProcessor) Process(ctx context.Context, task *worker.Task) (int
 		return nil, "", fmt.Errorf("unmarshal eval payload: %w", err)
 	}
 
-	resultKey := fmt.Sprintf(cache.KeyEvalResult, task.ID)
+	evalID := payload.EvaluationID
+	resultKey := fmt.Sprintf(cache.KeyEvalResult, evalID)
 	targetText := payload.TargetText
 	category := payload.Category
 
@@ -870,7 +880,6 @@ func (p *EvalTaskProcessor) Process(ctx context.Context, task *worker.Task) (int
 	// ===== A6: 上传音频到 OSS =====
 	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "oss")
 
-	evalID := task.ID
 	var feedbackAudioURL, demoAudioURL string
 
 	if p.ossProvider != nil {
@@ -896,36 +905,60 @@ func (p *EvalTaskProcessor) Process(ctx context.Context, task *worker.Task) (int
 	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "db")
 
 	if p.repos != nil {
-		evaluation := &model.PronunciationEvaluation{
-			ID:               evalID,
-			UserID:           task.UserID,
-			TargetText:       targetText,
-			OverallScore:     int(score),
-			AccuracyScore:    int(evalResult.Accuracy),
-			FluencyScore:     int(evalResult.Fluency),
-			IntegrityScore:   int(evalResult.Completeness),
-			FeedbackLevel:    feedbackLevel,
-			FeedbackText:     strPtr(feedbackText),
-			FeedbackAudioURL: strPtr(feedbackAudioURL),
-			ProblemWords:     model.StringArray(problemWords),
-			DifficultyLevel:  payload.DifficultyLevel,
-			Status:           "completed",
-		}
-		if demoType == "sentence" && demoAudioURL != "" {
-			evaluation.DemoSentenceAudioURL = strPtr(demoAudioURL)
-		}
-		if demoType == "word" && worstWord != "" && demoAudioURL != "" {
-			evaluation.ProblemWordAudioURLs = model.StringMap{worstWord: demoAudioURL}
+		// update evaluation record
+		evaluation, err := p.repos.PronunciationEvaluation.GetByID(ctx, evalID)
+		if err == nil && evaluation != nil {
+			evaluation.OverallScore = int(score)
+			evaluation.AccuracyScore = int(evalResult.Accuracy)
+			evaluation.FluencyScore = int(evalResult.Fluency)
+			evaluation.IntegrityScore = int(evalResult.Completeness)
+			evaluation.FeedbackLevel = feedbackLevel
+			evaluation.FeedbackText = strPtr(feedbackText)
+			evaluation.FeedbackAudioURL = strPtr(feedbackAudioURL)
+			evaluation.Status = "completed"
+			if demoType == "sentence" && demoAudioURL != "" {
+				evaluation.DemoSentenceAudioURL = strPtr(demoAudioURL)
+			}
+			if demoType == "word" && worstWord != "" && demoAudioURL != "" {
+				evaluation.ProblemWordAudioURLs = model.StringMap{worstWord: demoAudioURL}
+			}
+			if updateErr := p.repos.PronunciationEvaluation.Update(ctx, evaluation); updateErr != nil {
+				p.logger.Error("update eval db failed", slog.String("error", updateErr.Error()))
+			}
+		} else {
+			// Fallback: create if missing
+			evaluation := &model.PronunciationEvaluation{
+				ID:               evalID,
+				UserID:           task.UserID,
+				TargetText:       targetText,
+				OverallScore:     int(score),
+				AccuracyScore:    int(evalResult.Accuracy),
+				FluencyScore:     int(evalResult.Fluency),
+				IntegrityScore:   int(evalResult.Completeness),
+				FeedbackLevel:    feedbackLevel,
+				FeedbackText:     strPtr(feedbackText),
+				FeedbackAudioURL: strPtr(feedbackAudioURL),
+				ProblemWords:     model.StringArray(problemWords),
+				DifficultyLevel:  payload.DifficultyLevel,
+				Status:           "completed",
+			}
+			if demoType == "sentence" && demoAudioURL != "" {
+				evaluation.DemoSentenceAudioURL = strPtr(demoAudioURL)
+			}
+			if demoType == "word" && worstWord != "" && demoAudioURL != "" {
+				evaluation.ProblemWordAudioURLs = model.StringMap{worstWord: demoAudioURL}
+			}
+
+			for dbRetry := 0; dbRetry < 3; dbRetry++ {
+				if saveErr := p.repos.PronunciationEvaluation.Create(ctx, evaluation); saveErr != nil {
+					p.logger.Error("save eval db retry", slog.Int("attempt", dbRetry+1), slog.String("error", saveErr.Error()))
+					time.Sleep(time.Duration(dbRetry+1) * 500 * time.Millisecond)
+					continue
+				}
+				break
+			}
 		}
 
-		for dbRetry := 0; dbRetry < 3; dbRetry++ {
-			if saveErr := p.repos.PronunciationEvaluation.Create(ctx, evaluation); saveErr != nil {
-				p.logger.Error("save eval db retry", slog.Int("attempt", dbRetry+1), slog.String("error", saveErr.Error()))
-				time.Sleep(time.Duration(dbRetry+1) * 500 * time.Millisecond)
-				continue
-			}
-			break
-		}
 	}
 
 	// ===== A8: 更新学习统计（占位） =====
