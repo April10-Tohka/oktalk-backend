@@ -194,14 +194,15 @@ type ReportService interface {
 
 // reportServiceImpl Report Service 实现
 type reportServiceImpl struct {
-	repos         *db.Repositories
-	llmProvider   domain.LLMProvider
-	ttsProvider   domain.TTSProvider
-	ossProvider   domain.OSSProvider
-	taskCache     *cache.TaskCache
-	reportCache   *cache.ReportCache
-	workerManager *worker.Manager
-	logger        *slog.Logger
+	repos            *db.Repositories
+	llmProvider      domain.LLMProvider
+	ttsProvider      domain.TTSProvider
+	ossProvider      domain.OSSProvider
+	taskCache        *cache.TaskCache
+	reportCache      *cache.ReportCache
+	workerManager    *worker.Manager
+	rateLimitFactory domain.SceneLimiterFactory
+	logger           *slog.Logger
 }
 
 // NewReportService 创建 ReportService
@@ -213,17 +214,19 @@ func NewReportService(
 	taskCache *cache.TaskCache,
 	reportCache *cache.ReportCache,
 	workerMgr *worker.Manager,
+	rlFactory domain.SceneLimiterFactory,
 	logger *slog.Logger,
 ) ReportService {
 	return &reportServiceImpl{
-		repos:         repos,
-		llmProvider:   llmProvider,
-		ttsProvider:   ttsProvider,
-		ossProvider:   ossProvider,
-		taskCache:     taskCache,
-		reportCache:   reportCache,
-		workerManager: workerMgr,
-		logger:        logger,
+		repos:            repos,
+		llmProvider:      llmProvider,
+		ttsProvider:      ttsProvider,
+		ossProvider:      ossProvider,
+		taskCache:        taskCache,
+		reportCache:      reportCache,
+		workerManager:    workerMgr,
+		rateLimitFactory: rlFactory,
+		logger:           logger,
 	}
 }
 
@@ -518,6 +521,11 @@ func (s *reportServiceImpl) GenerateReport(ctx context.Context, req *GenerateRep
 	}
 	if activityCount < 3 {
 		return "", fmt.Errorf("数据不足，至少需要 3 条学习记录（当前 %d 条）", activityCount)
+	}
+
+	// 步骤 4.5：限流检查
+	if err := checkRateLimit(ctx, s.rateLimitFactory, "report_generate", req.UserID, s.logger); err != nil {
+		return "", err
 	}
 
 	// 步骤 5: 生成报告ID 并预先落库

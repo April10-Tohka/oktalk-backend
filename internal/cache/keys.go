@@ -54,7 +54,32 @@ const (
 
 // 用户信息类
 const (
-	KeyUserInfo = "user:info:%s" // user:info:{user_id}
+	KeyUserInfo    = "user:info:%s"    // user:info:{user_id}
+	KeyUserProfile = "user:profile:%s" // user:profile:{user_id} 用户资料缓存
+)
+
+// 短信验证码类
+const (
+	// KeySMSCode 短信验证码内容，value: JSON { "code": "123456", "attempt_count": 0 }
+	KeySMSCode = "sms:code:%s" // sms:code:{phone}
+	// KeySMSInterval 同手机号发送间隔锁
+	KeySMSInterval = "sms:interval:%s" // sms:interval:{phone}
+	// KeySMSIPCount 同 IP 发送计数
+	KeySMSIPCount = "sms:ip_count:%s" // sms:ip_count:{ip}
+)
+
+// 登录相关
+const (
+	// KeyLoginFail 登录失败计数
+	KeyLoginFail = "login:fail:%s" // login:fail:{phone}
+)
+
+// Token 相关
+const (
+	// KeyRefreshToken Refresh Token 存储，value: refresh_token 字符串
+	KeyRefreshToken = "refresh_token:%s" // refresh_token:{user_id}
+	// KeyTokenBlacklist Token 黑名单，TTL = 该 token 剩余有效期
+	KeyTokenBlacklist = "token:blacklist:%s" // token:blacklist:{jti}
 )
 
 // 学习文本类

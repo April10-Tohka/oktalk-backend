@@ -18,6 +18,8 @@ import (
 type Repositories struct {
 	User                    UserRepository
 	UserProfile             UserProfileRepository
+	UserWechatBinding       UserWechatBindingRepository
+	UserLoginLog            UserLoginLogRepository
 	VoiceConversation       VoiceConversationRepository
 	ConversationMessage     ConversationMessageRepository
 	PronunciationEvaluation PronunciationEvaluationRepository
@@ -30,6 +32,8 @@ func NewRepositories(db *gorm.DB) *Repositories {
 	return &Repositories{
 		User:                    NewUserRepository(db),
 		UserProfile:             NewUserProfileRepository(db),
+		UserWechatBinding:       NewUserWechatBindingRepository(db),
+		UserLoginLog:            NewUserLoginLogRepository(db),
 		VoiceConversation:       NewVoiceConversationRepository(db),
 		ConversationMessage:     NewConversationMessageRepository(db),
 		PronunciationEvaluation: NewPronunciationEvaluationRepository(db),
@@ -43,6 +47,8 @@ func (r *Repositories) WithTx(tx *gorm.DB) *Repositories {
 	return &Repositories{
 		User:                    r.User.WithTx(tx),
 		UserProfile:             r.UserProfile.WithTx(tx),
+		UserWechatBinding:       r.UserWechatBinding.WithTx(tx),
+		UserLoginLog:            r.UserLoginLog.WithTx(tx),
 		VoiceConversation:       r.VoiceConversation.WithTx(tx),
 		ConversationMessage:     r.ConversationMessage.WithTx(tx),
 		PronunciationEvaluation: r.PronunciationEvaluation.WithTx(tx),
@@ -93,6 +99,8 @@ func Migrate(db *gorm.DB) error {
 		// 用户相关
 		&model.User{},
 		&model.UserProfile{},
+		&model.UserWechatBinding{},
+		&model.UserLoginLog{},
 		// 对话相关
 		&model.VoiceConversation{},
 		&model.ConversationMessage{},

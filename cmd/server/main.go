@@ -32,7 +32,7 @@ func main() {
 	defer application.Close()
 
 	// 初始化路由（注入真实 Handler）
-	r := router.Setup(cfg, application.Handlers)
+	r := router.Setup(cfg, application.Handlers, application.RedisClient)
 
 	// 创建 HTTP 服务器
 	srv := &http.Server{

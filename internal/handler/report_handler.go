@@ -2,8 +2,12 @@
 package handler
 
 import (
+	"errors"
+	"fmt"
+
 	"github.com/gin-gonic/gin"
 
+	"pronunciation-correction-system/internal/domain"
 	"pronunciation-correction-system/internal/handler/middleware"
 	"pronunciation-correction-system/internal/service"
 )
@@ -86,11 +90,14 @@ func (h *ReportHandler) GenerateReport(c *gin.Context) {
 		UserID:     userID.(string),
 	})
 	if err != nil {
+		var rlErr *domain.RateLimitError
+		if errors.As(err, &rlErr) {
+			TooManyRequests(c, rlErr.RetryAfterSec, fmt.Sprintf("请求过于频繁，请 %d 秒后重试", rlErr.RetryAfterSec))
+			return
+		}
 		InternalError(c, err.Error())
 		return
 	}
-
-	// 步骤 5：返回成功响应
 	OK(c, gin.H{
 		"task_id":     taskID,
 		"report_type": reqBody.ReportType,

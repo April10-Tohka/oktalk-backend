@@ -185,6 +185,7 @@ type evaluateServiceImpl struct {
 	taskCache          *cache.TaskCache
 	evalCache          *cache.EvalCache
 	workerManager      *worker.Manager
+	rateLimitFactory   domain.SceneLimiterFactory
 	logger             *slog.Logger
 }
 
@@ -198,6 +199,7 @@ func NewEvaluateService(
 	taskCache *cache.TaskCache,
 	evalCache *cache.EvalCache,
 	workerMgr *worker.Manager,
+	rlFactory domain.SceneLimiterFactory,
 	logger *slog.Logger,
 ) EvaluateService {
 	return &evaluateServiceImpl{
@@ -209,6 +211,7 @@ func NewEvaluateService(
 		taskCache:          taskCache,
 		evalCache:          evalCache,
 		workerManager:      workerMgr,
+		rateLimitFactory:   rlFactory,
 		logger:             logger,
 	}
 }
@@ -528,6 +531,11 @@ func (s *evaluateServiceImpl) SubmitEvaluation(ctx context.Context, req *SubmitE
 	if !ok {
 		// TODO: 从数据库查询 text_id
 		return "", fmt.Errorf("text not found: %s", req.TextID)
+	}
+
+	// 步骤 4.5：限流检查
+	if err := checkRateLimit(ctx, s.rateLimitFactory, "evaluate_submit", req.UserID, s.logger); err != nil {
+		return "", err
 	}
 
 	// 步骤 5：WAV → PCM（去掉 44 字节 header）

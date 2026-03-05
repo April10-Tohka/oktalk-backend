@@ -13,6 +13,7 @@ import (
 	"pronunciation-correction-system/internal/cache"
 	"pronunciation-correction-system/internal/db"
 	"pronunciation-correction-system/internal/domain"
+	domainLimiter "pronunciation-correction-system/internal/domain"
 	"pronunciation-correction-system/internal/model"
 	"pronunciation-correction-system/internal/pkg/logger"
 	"pronunciation-correction-system/internal/pkg/uuid"
@@ -168,6 +169,7 @@ type chatServiceImpl struct {
 	taskCache        *cache.TaskCache
 	chatCache        *cache.ChatCache
 	workerManager    *worker.Manager
+	rateLimitFactory domainLimiter.SceneLimiterFactory
 	logger           *slog.Logger
 }
 
@@ -181,6 +183,7 @@ func NewChatService(
 	taskCache *cache.TaskCache,
 	chatCache *cache.ChatCache,
 	workerMgr *worker.Manager,
+	rlFactory domainLimiter.SceneLimiterFactory,
 	logger *slog.Logger,
 ) ChatService {
 	var conversationRepo db.VoiceConversationRepository
@@ -199,6 +202,7 @@ func NewChatService(
 		taskCache:        taskCache,
 		chatCache:        chatCache,
 		workerManager:    workerMgr,
+		rateLimitFactory: rlFactory,
 		logger:           logger,
 	}
 }
@@ -491,6 +495,7 @@ func (s *chatServiceImpl) SubmitChat(ctx context.Context, req *SubmitChatRequest
 	}
 
 	// TODO: 步骤 3：速率限制检查（RateLimiter.CheckLimit）
+	//调用 RateLimiter.CheckLimit(user_id, "chat_submit", 限制=10/分钟)
 
 	// 步骤 4：验证会话存在
 	if s.conversationRepo != nil {

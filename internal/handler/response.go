@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"math"
 	"net/http"
 
@@ -83,4 +84,10 @@ func NotFound(c *gin.Context, message string) {
 // InternalError 服务器错误 500
 func InternalError(c *gin.Context, message string) {
 	Fail(c, http.StatusInternalServerError, 500, message)
+}
+
+// TooManyRequests 限流响应 429
+func TooManyRequests(c *gin.Context, retryAfterSec int64, message string) {
+	c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
+	Fail(c, http.StatusTooManyRequests, 429, message)
 }

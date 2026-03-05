@@ -20,7 +20,11 @@ import (
 	infraXF "pronunciation-correction-system/internal/infrastructure/evalution/xf"
 	infraLLM "pronunciation-correction-system/internal/infrastructure/llm/qwen"
 	infraOSS "pronunciation-correction-system/internal/infrastructure/oss/aliyun"
+	infraRL "pronunciation-correction-system/internal/infrastructure/ratelimit"
+	infraSMS "pronunciation-correction-system/internal/infrastructure/sms"
 	infraTTS "pronunciation-correction-system/internal/infrastructure/tts/aliyun"
+	infraWechat "pronunciation-correction-system/internal/infrastructure/wechat"
+	pkgjwt "pronunciation-correction-system/internal/pkg/jwt"
 	"pronunciation-correction-system/internal/pkg/logger"
 	"pronunciation-correction-system/internal/service"
 	"pronunciation-correction-system/internal/worker"
@@ -52,6 +56,8 @@ type App struct {
 	LLMProvider        domain.LLMProvider
 	TTSProvider        domain.TTSProvider
 	OSSProvider        domain.OSSProvider
+	WechatClient       domain.WechatClient
+	SMSClient          infraSMS.Client
 
 	// 服务层
 	AuthService     service.AuthService
@@ -177,6 +183,15 @@ func (a *App) initInfrastructure() {
 		a.OSSProvider = ossAdapter
 	}
 
+	// WeChat 客户端
+	a.WechatClient = infraWechat.NewClient(a.Config.WeChat)
+
+	// SMS 客户端
+	a.SMSClient = infraSMS.NewClient(a.Config.SMS)
+
+	// 初始化 JWT
+	pkgjwt.Init(&a.Config.JWT)
+
 	log.Println("[App] Infrastructure adapters initialized")
 }
 
@@ -195,8 +210,20 @@ func (a *App) initLogger() error {
 // initServices 初始化业务服务
 func (a *App) initServices() {
 	appLogger := slog.Default()
-	a.AuthService = service.NewAuthService(appLogger)
-	a.UserService = service.NewUserService(appLogger)
+	a.AuthService = service.NewAuthService(
+		a.DB,
+		a.RedisClient,
+		a.Repos,
+		a.SMSClient,
+		a.WechatClient,
+		appLogger,
+	)
+	a.UserService = service.NewUserService(
+		a.DB,
+		a.RedisClient,
+		a.Repos,
+		appLogger,
+	)
 
 	// 创建 Worker Manager（需要在 Service 之前）
 	chatProcessor := service.NewChatTaskProcessor(
@@ -229,6 +256,9 @@ func (a *App) initServices() {
 	)
 	a.WorkerManager.Start()
 
+	// 创建限流工厂
+	rlFactory := infraRL.NewSceneLimiterFactory(a.Config.RateLimit)
+
 	a.ChatService = service.NewChatService(
 		a.Repos,
 		a.ASRProvider,
@@ -238,6 +268,7 @@ func (a *App) initServices() {
 		a.TaskCache,
 		a.ChatCache,
 		a.WorkerManager,
+		rlFactory,
 		appLogger,
 	)
 	a.EvaluateService = service.NewEvaluateService(
@@ -249,6 +280,7 @@ func (a *App) initServices() {
 		a.TaskCache,
 		a.EvalCache,
 		a.WorkerManager,
+		rlFactory,
 		appLogger,
 	)
 	a.ReportService = service.NewReportService(
@@ -259,6 +291,7 @@ func (a *App) initServices() {
 		a.TaskCache,
 		a.ReportCache,
 		a.WorkerManager,
+		rlFactory,
 		appLogger,
 	)
 

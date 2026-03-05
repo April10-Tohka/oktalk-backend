@@ -13,7 +13,10 @@ type Config struct {
 	TTS        TTSConfig        `mapstructure:"tts"`
 	OSS        OSSConfig        `mapstructure:"oss"`
 	JWT        JWTConfig        `mapstructure:"jwt"`
+	WeChat     WeChatConfig     `mapstructure:"wechat"`
+	SMS        SMSConfig        `mapstructure:"sms"`
 	Log        LogConfig        `mapstructure:"log"`
+	RateLimit  RateLimitConfig  `mapstructure:"rate_limit"`
 }
 
 // ===================== 服务器 & 基础设施 =====================
@@ -47,8 +50,25 @@ type RedisConfig struct {
 
 // JWTConfig JWT 认证配置
 type JWTConfig struct {
-	Secret      string `mapstructure:"secret"`
-	ExpireHours int    `mapstructure:"expire_hours"`
+	Secret        string `mapstructure:"secret"`         // 兼容旧配置（不再使用）
+	ExpireHours   int    `mapstructure:"expire_hours"`   // 兼容旧配置（不再使用）
+	AccessSecret  string `mapstructure:"access_secret"`  // Access Token 签名密钥
+	RefreshSecret string `mapstructure:"refresh_secret"` // Refresh Token 签名密钥（与 Access 分开）
+	AccessTTL     int    `mapstructure:"access_ttl"`     // Access Token 有效期，单位秒，默认 7200
+	RefreshTTL    int    `mapstructure:"refresh_ttl"`    // Refresh Token 有效期，单位秒，默认 2592000（30天）
+}
+
+// WeChatConfig 微信开放平台配置
+type WeChatConfig struct {
+	AppID     string `mapstructure:"app_id"`     // 微信开放平台 AppID
+	AppSecret string `mapstructure:"app_secret"` // 微信开放平台 AppSecret
+}
+
+// SMSConfig 短信服务配置
+type SMSConfig struct {
+	ActiveProvider string `mapstructure:"active_provider"` // 短信服务商标识（目前实现 mock）
+	SignName       string `mapstructure:"sign_name"`       // 短信签名
+	TemplateCode   string `mapstructure:"template_code"`   // 验证码模板 ID
 }
 
 // LogConfig 日志配置
@@ -210,4 +230,25 @@ type AliyunOSSConfig struct {
 	Endpoint        string `mapstructure:"endpoint"`
 	Region          string `mapstructure:"region"`
 	CDNDomain       string `mapstructure:"cdn_domain"` // CDN 加速域名（可选）
+}
+
+// ===================== 限流 =====================
+
+// RateLimitConfig 限流总配置
+type RateLimitConfig struct {
+	Enabled bool                            `yaml:"enabled" mapstructure:"enabled"`
+	Scenes  map[string]SceneRateLimitConfig `yaml:"scenes"  mapstructure:"scenes"`
+}
+
+// SceneRateLimitConfig 单个场景的双层限流配置
+type SceneRateLimitConfig struct {
+	User   BucketConfig `yaml:"user"   mapstructure:"user"`
+	Global BucketConfig `yaml:"global" mapstructure:"global"`
+}
+
+// BucketConfig 令牌桶参数
+type BucketConfig struct {
+	Capacity         int64 `yaml:"capacity"           mapstructure:"capacity"`
+	RefillRate       int64 `yaml:"refill_rate"         mapstructure:"refill_rate"`
+	RefillIntervalMs int64 `yaml:"refill_interval_ms"  mapstructure:"refill_interval_ms"`
 }

@@ -98,6 +98,19 @@ func setDefaults(v *viper.Viper) {
 
 	// JWT 默认配置
 	v.SetDefault("jwt.expire_hours", 24)
+	v.SetDefault("jwt.access_secret", "oktalk-access-secret-change-me")
+	v.SetDefault("jwt.refresh_secret", "oktalk-refresh-secret-change-me")
+	v.SetDefault("jwt.access_ttl", 7200)       // 2 小时
+	v.SetDefault("jwt.refresh_ttl", 2592000)    // 30 天
+
+	// 微信配置
+	v.SetDefault("wechat.app_id", "")
+	v.SetDefault("wechat.app_secret", "")
+
+	// 短信配置
+	v.SetDefault("sms.active_provider", "mock")
+	v.SetDefault("sms.sign_name", "OKTalk")
+	v.SetDefault("sms.template_code", "")
 
 	// 日志默认配置
 	v.SetDefault("log.environment", "development")

@@ -4,6 +4,7 @@ package router
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 
 	"pronunciation-correction-system/internal/config"
 	"pronunciation-correction-system/internal/handler"
@@ -12,7 +13,7 @@ import (
 
 // Setup 初始化并返回路由引擎
 // handlers: 通过依赖注入传入的所有 Handler 实例
-func Setup(cfg *config.Config, handlers *handler.Handlers) *gin.Engine {
+func Setup(cfg *config.Config, handlers *handler.Handlers, rdb *redis.Client) *gin.Engine {
 	// 设置运行模式
 	gin.SetMode(cfg.Server.Mode)
 
@@ -40,8 +41,10 @@ func Setup(cfg *config.Config, handlers *handler.Handlers) *gin.Engine {
 
 		// ── 需要认证的路由 ──
 		authed := v1.Group("")
-		authed.Use(middleware.Auth(cfg))
+		authed.Use(middleware.Auth(cfg, rdb))
 		{
+			// 需要认证的 auth 路由（logout、token/refresh 由 auth 模块自行处理）
+			setupAuthProtectedRoutes(authed, handlers.Auth)
 			setupChatRoutes(authed, handlers.Chat)         // AI 语音对话
 			setupEvaluateRoutes(authed, handlers.Evaluate) // AI 发音纠正
 			setupReportRoutes(authed, handlers.Report)     // 智能学习报告

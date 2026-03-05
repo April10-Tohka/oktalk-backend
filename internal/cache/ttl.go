@@ -43,4 +43,24 @@ const (
 
 	// TTLTextContent 学习文本 永久（传 0 时不调用 Expire）
 	TTLTextContent = 0
+
+	// ===================== 认证相关 TTL =====================
+
+	// TTLSMSCode 短信验证码 5分钟
+	TTLSMSCode = 5 * time.Minute
+
+	// TTLSMSInterval 短信发送间隔 60秒
+	TTLSMSInterval = 60 * time.Second
+
+	// TTLSMSIPCount IP 发送计数 10分钟
+	TTLSMSIPCount = 10 * time.Minute
+
+	// TTLLoginFail 登录失败计数 10分钟
+	TTLLoginFail = 10 * time.Minute
+
+	// TTLRefreshToken Refresh Token 30天
+	TTLRefreshToken = 30 * 24 * time.Hour
+
+	// TTLUserProfile 用户资料缓存 1小时
+	TTLUserProfile = 1 * time.Hour
 )

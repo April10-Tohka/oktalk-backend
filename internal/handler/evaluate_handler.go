@@ -4,6 +4,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"pronunciation-correction-system/internal/domain"
 	"pronunciation-correction-system/internal/handler/middleware"
 	"pronunciation-correction-system/internal/pkg/logger"
 	"pronunciation-correction-system/internal/service"
@@ -176,6 +178,11 @@ func (h *EvaluateHandler) SubmitEvaluation(c *gin.Context) {
 	})
 	if err != nil {
 		logger.ErrorContext(c.Request.Context(), "submit eval service failed", "error", err)
+		var rlErr *domain.RateLimitError
+		if errors.As(err, &rlErr) {
+			TooManyRequests(c, rlErr.RetryAfterSec, fmt.Sprintf("请求过于频繁，请 %d 秒后重试", rlErr.RetryAfterSec))
+			return
+		}
 		InternalError(c, err.Error())
 		return
 	}

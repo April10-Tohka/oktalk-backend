@@ -2,8 +2,11 @@
 package handler
 
 import (
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 
+	"pronunciation-correction-system/internal/handler/middleware"
 	"pronunciation-correction-system/internal/service"
 )
 
@@ -17,46 +20,128 @@ func NewAuthHandler(authService service.AuthService) *AuthHandler {
 	return &AuthHandler{authService: authService}
 }
 
-// Login POST /api/v1/auth/login
-// 用户登录，返回 JWT Token
-func (h *AuthHandler) Login(c *gin.Context) {
-	// TODO: Step2 实现
-	// 1. 解析 JSON 请求体: email, password
-	// 2. 调用 h.authService.Login(ctx, email, password)
-	// 3. 成功：OK(c, authResponse)
-	// 4. 失败：Unauthorized / BadRequest
-	InternalError(c, "not implemented")
+// SendSMS POST /api/v1/auth/sms/send
+// 发送短信验证码
+func (h *AuthHandler) SendSMS(c *gin.Context) {
+	var req service.SendSMSRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+
+	// 注入 IP
+	req.IP = c.ClientIP()
+
+	resp, err := h.authService.SendSMS(c.Request.Context(), &req)
+	if err != nil {
+		handleAuthError(c, err)
+		return
+	}
+
+	OK(c, resp)
 }
 
-// Register POST /api/v1/auth/register
-// 用户注册，注册后自动登录返回 Token
-func (h *AuthHandler) Register(c *gin.Context) {
-	// TODO: Step2 实现
-	// 1. 解析 JSON 请求体: email, password, username
-	// 2. 调用 h.authService.Register(ctx, req)
-	// 3. 成功：OK(c, authResponse)
-	// 4. 失败：BadRequest(c, "email already registered") / InternalError
-	InternalError(c, "not implemented")
+// SMSLogin POST /api/v1/auth/sms/login
+// 手机验证码登录/自动注册
+func (h *AuthHandler) SMSLogin(c *gin.Context) {
+	var req service.SMSLoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+
+	// 注入 IP 和 User-Agent
+	req.IP = c.ClientIP()
+
+	resp, err := h.authService.SMSLogin(c.Request.Context(), &req)
+	if err != nil {
+		handleAuthError(c, err)
+		return
+	}
+
+	OK(c, resp)
+}
+
+// WechatLogin POST /api/v1/auth/wechat/login
+// 微信 App SSO 登录/自动注册
+func (h *AuthHandler) WechatLogin(c *gin.Context) {
+	var req service.WechatLoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+
+	// 注入 IP
+	req.IP = c.ClientIP()
+
+	resp, err := h.authService.WechatLogin(c.Request.Context(), &req)
+	if err != nil {
+		handleAuthError(c, err)
+		return
+	}
+
+	OK(c, resp)
+}
+
+// RefreshToken POST /api/v1/auth/token/refresh
+// 刷新 Access Token
+func (h *AuthHandler) RefreshToken(c *gin.Context) {
+	var req service.RefreshTokenRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+
+	resp, err := h.authService.RefreshToken(c.Request.Context(), &req)
+	if err != nil {
+		handleAuthError(c, err)
+		return
+	}
+
+	OK(c, resp)
 }
 
 // Logout POST /api/v1/auth/logout
-// 用户登出，使当前 Token 失效
+// 退出登录（需要认证）
 func (h *AuthHandler) Logout(c *gin.Context) {
-	// TODO: Step2 实现
-	// 1. 从 Context 获取 user_id 和 token
-	// 2. 调用 h.authService.Logout(ctx, userID, token)
-	// 3. 成功：OK(c, gin.H{"message": "logged out"})
-	// 4. 失败：InternalError
-	InternalError(c, "not implemented")
+	userID, _ := c.Get(string(middleware.UserIDKey))
+	jti, _ := c.Get(string(middleware.JTIKey))
+
+	req := &service.LogoutRequest{
+		UserID: userID.(string),
+		JTI:    jti.(string),
+		IP:     c.ClientIP(),
+	}
+
+	err := h.authService.Logout(c.Request.Context(), req)
+	if err != nil {
+		handleAuthError(c, err)
+		return
+	}
+
+	OK(c, gin.H{"message": "已退出登录"})
 }
 
-// RefreshToken POST /api/v1/auth/refresh
-// 刷新 JWT Token
-func (h *AuthHandler) RefreshToken(c *gin.Context) {
-	// TODO: Step2 实现
-	// 1. 解析 JSON 请求体: refresh_token
-	// 2. 调用 h.authService.RefreshToken(ctx, refreshToken)
-	// 3. 成功：OK(c, tokenResponse)
-	// 4. 失败：Unauthorized / InternalError
-	InternalError(c, "not implemented")
+// handleAuthError 统一处理认证业务错误
+func handleAuthError(c *gin.Context, err error) {
+	if authErr, ok := err.(*service.AuthError); ok {
+		switch authErr.Code {
+		case 400:
+			Fail(c, http.StatusBadRequest, authErr.Code, authErr.Message)
+		case 401:
+			Fail(c, http.StatusUnauthorized, authErr.Code, authErr.Message)
+		case 403:
+			Fail(c, http.StatusForbidden, authErr.Code, authErr.Message)
+		case 404:
+			Fail(c, http.StatusNotFound, authErr.Code, authErr.Message)
+		case 409:
+			Fail(c, http.StatusConflict, authErr.Code, authErr.Message)
+		case 429:
+			Fail(c, http.StatusTooManyRequests, authErr.Code, authErr.Message)
+		default:
+			InternalError(c, authErr.Message)
+		}
+		return
+	}
+	InternalError(c, err.Error())
 }
