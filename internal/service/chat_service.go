@@ -494,8 +494,10 @@ func (s *chatServiceImpl) SubmitChat(ctx context.Context, req *SubmitChatRequest
 		audioType = "wav"
 	}
 
-	// TODO: 步骤 3：速率限制检查（RateLimiter.CheckLimit）
-	//调用 RateLimiter.CheckLimit(user_id, "chat_submit", 限制=10/分钟)
+	// 步骤 3：速率限制检查
+	if err := checkRateLimit(ctx, s.rateLimitFactory, "chat_submit", req.UserID, s.logger); err != nil {
+		return "", err
+	}
 
 	// 步骤 4：验证会话存在
 	if s.conversationRepo != nil {
