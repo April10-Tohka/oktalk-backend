@@ -162,13 +162,13 @@ func (p *WorkerPool) processTask(task *Task) {
 		p.setResultByType(taskCtx, task.Type, resultKey, result)
 
 		// Step 3b-2: 更新任务状态
-		if updateErr := p.taskCache.UpdateTaskStatus(taskCtx, task.ID, "success"); updateErr != nil {
-			logger.Error("update task status to success err",
-				slog.String("task_id", task.ID), slog.String("error", updateErr.Error()))
-		}
 		if setErr := p.taskCache.SetResultKey(taskCtx, task.ID, resultKey); setErr != nil {
 			logger.Error("set task result key err",
 				slog.String("task_id", task.ID), slog.String("error", setErr.Error()))
+		}
+		if updateErr := p.taskCache.UpdateTaskStatus(taskCtx, task.ID, "success"); updateErr != nil {
+			logger.Error("update task status to success err",
+				slog.String("task_id", task.ID), slog.String("error", updateErr.Error()))
 		}
 
 		// Step 3b-3: 异步持久化到 DB（独立 goroutine + 10s 超时）

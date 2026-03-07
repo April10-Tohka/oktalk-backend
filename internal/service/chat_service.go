@@ -569,10 +569,10 @@ func (s *chatServiceImpl) SubmitChat(ctx context.Context, req *SubmitChatRequest
 		return "", fmt.Errorf("marshal chat payload: %w", err)
 	}
 
-	// 步骤 7：构建 Task 并提交 (以 userMsgID 作为 DomainID)
+	// 步骤 7：构建 Task 并提交 (以 aiMsgID 作为 DomainID)
 	task := &worker.Task{
 		Type:     "chat",
-		DomainID: userMsgID,
+		DomainID: aiMsgID,
 		UserID:   req.UserID,
 		Payload:  payload,
 	}
@@ -646,14 +646,11 @@ func (s *chatServiceImpl) GetChatResult(ctx context.Context, taskID string) (*Ch
 	case "success":
 		// 从 chatCache 获取完整结果
 		resultKey := meta.ResultKey
-		// resultKey 格式: chat:result:{task_id}，提取 task_id 部分
-		var resultTaskID string
-		fmt.Sscanf(resultKey, "chat:result:%s", &resultTaskID)
-		if resultTaskID == "" {
-			resultTaskID = taskID
-		}
+		// resultKey 格式: chat:result:{aiMsgID}，提取 aiMsgID 部分
+		var aiMsgID string
+		fmt.Sscanf(resultKey, "chat:result:%s", &aiMsgID)
 
-		chatResult, found, cacheErr := s.chatCache.GetChatResult(ctx, resultTaskID)
+		chatResult, found, cacheErr := s.chatCache.GetChatResult(ctx, aiMsgID)
 		if cacheErr != nil {
 			logger.ErrorContext(ctx, "get chat result from cache failed", "task_id", taskID, "error", cacheErr)
 			return nil, fmt.Errorf("get chat result: %w", cacheErr)

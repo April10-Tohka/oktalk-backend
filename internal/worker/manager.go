@@ -117,7 +117,8 @@ func (m *Manager) SubmitTask(ctx context.Context, task *Task) (string, error) {
 	if task.DomainID != "" {
 		cacheSubKey = task.DomainID
 	} else {
-		cacheSubKey = task.ID
+		// return error if domain_id is empty, because we need it to construct cache key
+		return "", fmt.Errorf("domain_id is required")
 	}
 
 	switch task.Type {
