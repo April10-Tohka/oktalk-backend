@@ -16,7 +16,7 @@ func setupEvaluateRoutes(rg *gin.RouterGroup, h *handler.EvaluateHandler) {
 		// 提交发音评测请求
 		eval.POST("/submit", h.SubmitEvaluation)
 		// 查询发音评测处理结果
-		eval.GET("/result/:eval_id", h.GetEvaluationResult)
+		eval.GET("/result/:task_id", h.GetEvaluationResult)
 		// 获取当前用户的评测历史列表
 		eval.GET("/history", h.GetEvaluationHistory)
 		// 获取某次评测的完整详情

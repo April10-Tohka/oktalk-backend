@@ -124,12 +124,12 @@ func (h *ReportHandler) GetReportStatus(c *gin.Context) {
 	OK(c, result)
 }
 
-// GetReport GET /api/v1/report/:report_id
+// GetReport GET /api/v1/report/:task_id
 // 获取报告完整详情（也用于轮询异步报告结果）
 func (h *ReportHandler) GetReport(c *gin.Context) {
-	reportID := c.Param("report_id")
+	reportID := c.Param("task_id")
 	if reportID == "" {
-		BadRequest(c, "report_id is required")
+		BadRequest(c, "task_id is required")
 		return
 	}
 

@@ -99,7 +99,7 @@ type WordDetail struct {
 
 // EvaluationResultResponse 发音评测完整结果
 type EvaluationResultResponse struct {
-	EvalID               string            `json:"eval_id"`
+	TaskID               string            `json:"task_id"`
 	Status               string            `json:"status"`
 	Message              string            `json:"message,omitempty"`
 	TextID               string            `json:"text_id,omitempty"`
@@ -160,7 +160,7 @@ type EvaluateService interface {
 	SubmitEvaluation(ctx context.Context, req *SubmitEvaluationRequest) (evalID string, err error)
 
 	// GetEvaluationResult 查询异步评测结果
-	GetEvaluationResult(ctx context.Context, evalID string) (*EvaluationResultResponse, error)
+	GetEvaluationResult(ctx context.Context, taskID string) (*EvaluationResultResponse, error)
 
 	// GetEvaluationHistory 获取用户评测历史列表
 	GetEvaluationHistory(ctx context.Context, req *EvalHistoryRequest) ([]*EvalSummary, int64, error)
@@ -603,19 +603,19 @@ var evalStageDescriptions = map[string]string{
 	"completed":  "评测完成",
 }
 
-func (s *evaluateServiceImpl) GetEvaluationResult(ctx context.Context, evalID string) (*EvaluationResultResponse, error) {
-	if evalID == "" {
-		return nil, errors.New("eval_id is empty")
+func (s *evaluateServiceImpl) GetEvaluationResult(ctx context.Context, taskID string) (*EvaluationResultResponse, error) {
+	if taskID == "" {
+		return nil, errors.New("task_id is empty")
 	}
 
 	// 步骤 1：从缓存查询任务状态
-	meta, err := s.taskCache.GetTaskMeta(ctx, evalID)
+	meta, err := s.taskCache.GetTaskMeta(ctx, taskID)
 	if err != nil {
-		logger.ErrorContext(ctx, "get eval task meta failed", "eval_id", evalID, "error", err)
+		logger.ErrorContext(ctx, "get eval task meta failed", "task_id", taskID, "error", err)
 		return nil, fmt.Errorf("query task status: %w", err)
 	}
 	if meta == nil {
-		return nil, fmt.Errorf("evaluation not found: %s", evalID)
+		return nil, fmt.Errorf("evaluation not found: %s", taskID)
 	}
 
 	// 步骤 2：根据状态构建响应
@@ -626,7 +626,7 @@ func (s *evaluateServiceImpl) GetEvaluationResult(ctx context.Context, evalID st
 			stage = "queued"
 		}
 		return &EvaluationResultResponse{
-			EvalID:  evalID,
+			TaskID:  taskID,
 			Status:  "pending",
 			Message: evalStageDescriptions[stage],
 		}, nil
@@ -638,7 +638,7 @@ func (s *evaluateServiceImpl) GetEvaluationResult(ctx context.Context, evalID st
 			msg = "正在处理中..."
 		}
 		return &EvaluationResultResponse{
-			EvalID:  evalID,
+			TaskID:  taskID,
 			Status:  "processing",
 			Message: msg,
 		}, nil
@@ -646,13 +646,11 @@ func (s *evaluateServiceImpl) GetEvaluationResult(ctx context.Context, evalID st
 	case "success":
 		// 从 evalCache 获取完整结果
 		resultKey := meta.ResultKey
-		var resultEvalID string
-		fmt.Sscanf(resultKey, "evaluate:result:%s", &resultEvalID)
-		if resultEvalID == "" {
-			resultEvalID = evalID
-		}
+		// resultKey 格式: evaluate:result:{evalID}，提取 evalID 部分
+		var evalID string
+		fmt.Sscanf(resultKey, "evaluate:result:%s", &evalID)
 
-		evalResult, found, cacheErr := s.evalCache.GetEvalResult(ctx, resultEvalID)
+		evalResult, found, cacheErr := s.evalCache.GetEvalResult(ctx, evalID)
 		if cacheErr != nil {
 			logger.ErrorContext(ctx, "get eval result from cache failed", "eval_id", evalID, "error", cacheErr)
 			return nil, fmt.Errorf("get eval result: %w", cacheErr)
@@ -670,7 +668,7 @@ func (s *evaluateServiceImpl) GetEvaluationResult(ctx context.Context, evalID st
 		}
 
 		resp := &EvaluationResultResponse{
-			EvalID:        evalID,
+			TaskID:        taskID,
 			Status:        "success",
 			TextID:        evalResult.TextID,
 			ReferenceText: evalResult.TargetText,
@@ -691,14 +689,14 @@ func (s *evaluateServiceImpl) GetEvaluationResult(ctx context.Context, evalID st
 
 	case "failed":
 		return &EvaluationResultResponse{
-			EvalID:       evalID,
+			TaskID:       taskID,
 			Status:       "failed",
 			ErrorMessage: meta.Error,
 			Message:      "评测处理失败，请重试或联系支持",
 		}, nil
 
 	default:
-		logger.ErrorContext(ctx, "unknown eval task status", "eval_id", evalID, "status", meta.Status)
+		logger.ErrorContext(ctx, "unknown eval task status", "task_id", taskID, "status", meta.Status)
 		return nil, fmt.Errorf("unknown task status: %s", meta.Status)
 	}
 }

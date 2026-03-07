@@ -196,20 +196,20 @@ func (h *EvaluateHandler) SubmitEvaluation(c *gin.Context) {
 	})
 }
 
-// GetEvaluationResult GET /api/v1/evaluate/result/:eval_id
+// GetEvaluationResult GET /api/v1/evaluate/result/:task_id
 // 查询异步发音评测处理结果
 func (h *EvaluateHandler) GetEvaluationResult(c *gin.Context) {
 	// 步骤 1：解析路径参数
-	evalID := c.Param("eval_id")
-	if evalID == "" {
-		BadRequest(c, "eval_id is required")
+	taskID := c.Param("task_id")
+	if taskID == "" {
+		BadRequest(c, "task_id is required")
 		return
 	}
 
 	// 步骤 2：调用 Service
-	result, err := h.evaluateService.GetEvaluationResult(c.Request.Context(), evalID)
+	result, err := h.evaluateService.GetEvaluationResult(c.Request.Context(), taskID)
 	if err != nil {
-		logger.ErrorContext(c.Request.Context(), "get eval result failed", "eval_id", evalID, "error", err)
+		logger.ErrorContext(c.Request.Context(), "get eval result failed", "task_id", taskID, "error", err)
 		InternalError(c, err.Error())
 		return
 	}
