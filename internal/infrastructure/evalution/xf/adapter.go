@@ -48,9 +48,11 @@ func (a *XFEvaluationAdapter) Assess(ctx context.Context, text string, audioData
 	}
 
 	logger.InfoContext(ctx, "xf evaluation: assess completed",
+		"sid", result.Sid,
 		"total_score", result.TotalScore,
-		"accuracy", result.Accuracy,
-		"fluency", result.Fluency,
+		"accuracy_score", result.AccuracyScore,
+		"fluency_score", result.FluencyScore,
+		"integrity_score", result.IntegrityScore,
 		"word_count", len(result.Words))
 
 	// 将内部 SDK 结果转换为领域层结果
@@ -65,12 +67,16 @@ func (a *XFEvaluationAdapter) Close() error {
 // convertToResult 将 SDK 内部结果转换为领域层 EvaluationResult
 func convertToResult(sdkResult *speechAssessResult) *domain.EvaluationResult {
 	result := &domain.EvaluationResult{
-		TotalScore:   sdkResult.TotalScore,
-		Accuracy:     sdkResult.Accuracy,
-		Fluency:      sdkResult.Fluency,
-		Completeness: sdkResult.Completeness,
-		Intonation:   sdkResult.Intonation,
-		Words:        make([]domain.WordEvaluationResult, len(sdkResult.Words)),
+		Sid:            sdkResult.Sid,
+		TotalScore:     (sdkResult.TotalScore),
+		AccuracyScore:  (sdkResult.AccuracyScore),
+		FluencyScore:   (sdkResult.FluencyScore),
+		IntegrityScore: (sdkResult.IntegrityScore),
+		StandardScore:  (sdkResult.StandardScore),
+		Words:          make([]domain.WordEvaluationResult, len(sdkResult.Words)),
+		RawXML:         sdkResult.RawXML,
+		IsRejected:     sdkResult.IsRejected,
+		ExceptInfo:     sdkResult.ExceptInfo,
 	}
 
 	for i, w := range sdkResult.Words {
@@ -79,16 +85,18 @@ func convertToResult(sdkResult *speechAssessResult) *domain.EvaluationResult {
 			Score:     w.Score,
 			BeginTime: w.BeginTime,
 			EndTime:   w.EndTime,
-			Phonemes:  make([]domain.PhonemeEvaluationResult, len(w.Phonemes)),
+			DpMessage: w.DpMessage,
+			// Phonemes:  make([]domain.PhonemeEvaluationResult, len(w.Phonemes)),
 		}
-		for j, p := range w.Phonemes {
-			word.Phonemes[j] = domain.PhonemeEvaluationResult{
-				Phoneme:   p.Phoneme,
-				Score:     p.Score,
-				BeginTime: p.BeginTime,
-				EndTime:   p.EndTime,
-			}
-		}
+		// TODO: 后续完善音素级结果转换
+		// for j, p := range w.Phonemes {
+		// 	word.Phonemes[j] = domain.PhonemeEvaluationResult{
+		// 		Phoneme:   p.Phoneme,
+		// 		Score:     p.Score,
+		// 		BeginTime: p.BeginTime,
+		// 		EndTime:   p.EndTime,
+		// 	}
+		// }
 		result.Words[i] = word
 	}
 

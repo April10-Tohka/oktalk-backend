@@ -1,7 +1,9 @@
-// Package llm 提供 LLM 相关工具（Prompt 模板等）
 package llm
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // ===================== S 级 (90-100 分) =====================
 
@@ -19,8 +21,7 @@ Example: "Amazing job! Your pronunciation is so clear and beautiful!"`
 
 // ===================== A 级 (70-89 分) =====================
 
-// BuildALevelPrompt A 级反馈 Prompt（鼓励 + 诊断问题单词）
-func BuildALevelPrompt(targetText string, score float64, problemWord string, wordScore float64) (system string, user string) {
+func BuildALevelPrompt(targetText string, score float64, problemWords []string) (system string, user string) {
 	system = `You are a friendly English teacher for kids (6-12 years old).
 The student read a sentence with a good score but had trouble with one word.
 Generate a SHORT (2-3 sentences, max 30 words) feedback in English:
@@ -29,14 +30,19 @@ Generate a SHORT (2-3 sentences, max 30 words) feedback in English:
 Do NOT mention specific scores. Keep it simple and encouraging.
 Example: "Great reading! The word 'apple' is a bit tricky. Try saying 'AP-pull' slowly!"`
 
-	user = fmt.Sprintf("Student read: \"%s\"\nProblem word: \"%s\" (score: %.0f/100)", targetText, problemWord, wordScore)
+	var wordsPart string
+	if len(problemWords) > 0 {
+		wordsPart = fmt.Sprintf("Problem words: %s", strings.Join(problemWords, ", "))
+	} else {
+		wordsPart = "Problem words: (none detected)"
+	}
+	user = fmt.Sprintf("Student read: \"%s\"\n%s", targetText, wordsPart)
 	return
 }
 
 // ===================== B 级 (50-69 分) =====================
 
-// BuildBLevelPrompt B 级反馈 Prompt（诊断 + 示范建议）
-func BuildBLevelPrompt(targetText string, score float64, problemWord string, wordScore float64) (system string, user string) {
+func BuildBLevelPrompt(targetText string, score float64, problemWords []string) (system string, user string) {
 	system = `You are a patient English teacher for kids (6-12 years old).
 The student tried to read a sentence but struggled with pronunciation.
 Generate a SHORT (2-3 sentences, max 35 words) feedback in English:
@@ -46,7 +52,13 @@ Generate a SHORT (2-3 sentences, max 35 words) feedback in English:
 Do NOT mention specific scores. Be warm and supportive.
 Example: "Nice try! Let's practice 'beautiful' together - say 'BYOO-tih-ful'. Listen to the demo and try again!"`
 
-	user = fmt.Sprintf("Student read: \"%s\"\nMost problematic word: \"%s\" (score: %.0f/100)", targetText, problemWord, wordScore)
+	var wordsPart string
+	if len(problemWords) > 0 {
+		wordsPart = fmt.Sprintf("Most problematic words: %s", strings.Join(problemWords, ", "))
+	} else {
+		wordsPart = "Most problematic words: (none detected)"
+	}
+	user = fmt.Sprintf("Student read: \"%s\"\n%s", targetText, wordsPart)
 	return
 }
 

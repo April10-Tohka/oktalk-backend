@@ -85,7 +85,7 @@ func (c *internalClient) speechAssess(ctx context.Context, req *speechAssessRequ
 	logger.DebugContext(ctx, "xf ise: all frames sent, waiting for result")
 
 	// 4. 接收评测结果
-	resultXML, err := c.receiveResult(ctx, conn)
+	resultXML, sid, err := c.receiveResult(ctx, conn)
 	if err != nil {
 		return nil, fmt.Errorf("receive result: %w", err)
 	}
@@ -93,7 +93,7 @@ func (c *internalClient) speechAssess(ctx context.Context, req *speechAssessRequ
 	logger.DebugContext(ctx, "xf ise: received result", "xml_length", len(resultXML))
 
 	// 5. 解析 XML 评测结果
-	result, err := parseXMLResult(resultXML, req.Category)
+	result, err := parseXMLResult(resultXML, sid)
 	if err != nil {
 		return nil, fmt.Errorf("parse xml result: %w", err)
 	}
@@ -229,11 +229,11 @@ func (c *internalClient) sendAudioChunk(ctx context.Context, conn *websocket.Con
 }
 
 // receiveResult 接收评测结果，循环读取直到 status==2
-func (c *internalClient) receiveResult(ctx context.Context, conn *websocket.Conn) (string, error) {
+func (c *internalClient) receiveResult(ctx context.Context, conn *websocket.Conn) ([]byte, string, error) {
 	for {
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return nil, "", ctx.Err()
 		default:
 		}
 
@@ -241,17 +241,17 @@ func (c *internalClient) receiveResult(ctx context.Context, conn *websocket.Conn
 
 		_, message, err := conn.ReadMessage()
 		if err != nil {
-			return "", fmt.Errorf("read message: %w", err)
+			return nil, "", fmt.Errorf("read message: %w", err)
 		}
 
 		var resp responseFrame
 		if err := json.Unmarshal(message, &resp); err != nil {
-			return "", fmt.Errorf("unmarshal response: %w", err)
+			return nil, "", fmt.Errorf("unmarshal response: %w", err)
 		}
 
 		// 检查错误码
 		if resp.Code != 0 {
-			return "", NewError(resp.Code, resp.Message)
+			return nil, "", NewError(resp.Code, resp.Message)
 		}
 
 		if resp.Data == nil {
@@ -261,28 +261,27 @@ func (c *internalClient) receiveResult(ctx context.Context, conn *websocket.Conn
 		// status==2 表示最终结果
 		if resp.Data.Status == 2 {
 			if resp.Data.Data == "" {
-				return "", fmt.Errorf("final response has empty data")
+				return nil, "", fmt.Errorf("final response has empty data")
 			}
-
 			// Base64 解码获取 XML
 			xmlBytes, err := base64.StdEncoding.DecodeString(resp.Data.Data)
 			if err != nil {
-				return "", fmt.Errorf("base64 decode result: %w", err)
+				return nil, "", fmt.Errorf("base64 decode result: %w", err)
 			}
-
-			logger.DebugContext(ctx, "xf ise: final result received", "sid", resp.Sid)
-			return string(xmlBytes), nil
+			Sid := resp.Sid
+			logger.InfoContext(ctx, "xf ise: final result received", "sid", Sid)
+			return xmlBytes, Sid, nil
 		}
 	}
 }
 
 // parseXMLResult 解析 XML 评测结果为内部结构
-func parseXMLResult(xmlStr string, category string) (*speechAssessResult, error) {
+func parseXMLResult(xmlBytes []byte, sid string) (*speechAssessResult, error) {
 	var result xmlResult
-	if err := xml.Unmarshal([]byte(xmlStr), &result); err != nil {
+	if err := xml.Unmarshal(xmlBytes, &result); err != nil {
 		return nil, fmt.Errorf("xml unmarshal: %w", err)
 	}
-
+	logger.Info("xf ise: xml result parsed", "xml_result", result)
 	// 根据题型取对应的 block
 	var block *xmlReadBlock
 	switch {
@@ -295,11 +294,11 @@ func parseXMLResult(xmlStr string, category string) (*speechAssessResult, error)
 	default:
 		return nil, fmt.Errorf("no matching read block found in xml result")
 	}
-
+	logger.Info("查看block", "block", *block)
 	if block.RecPaper == nil {
 		return nil, fmt.Errorf("rec_paper is nil")
 	}
-
+	logger.Info("查看block.RecPaper", "block.RecPaper", *block.RecPaper)
 	// 取对应题型的评测项
 	var item *xmlReadItem
 	switch {
@@ -312,18 +311,26 @@ func parseXMLResult(xmlStr string, category string) (*speechAssessResult, error)
 	default:
 		return nil, fmt.Errorf("no matching read item in rec_paper")
 	}
-
+	logger.Info("查看item", "item", *item)
 	assessResult := &speechAssessResult{
-		TotalScore:   parseFloat(item.TotalScore),
-		Accuracy:     parseFloat(item.AccuracyScore),
-		Fluency:      parseFloat(item.FluencyScore),
-		Completeness: parseFloat(item.IntegrityScore),
-		Intonation:   parseFloat(item.StandardScore),
+		Sid:            sid,
+		RawXML:         string(xmlBytes),
+		TotalScore:     parseFloat(item.TotalScore),
+		AccuracyScore:  parseFloat(item.AccuracyScore),
+		FluencyScore:   parseFloat(item.FluencyScore),
+		IntegrityScore: parseFloat(item.IntegrityScore),
+		StandardScore:  parseFloat(item.StandardScore),
+		IsRejected:     item.IsRejected == "true",
+		ExceptInfo:     item.ExceptInfo,
 	}
 
 	// 解析单词级结果
 	for _, sentence := range item.Sentences {
 		for _, word := range sentence.Words {
+			// if word.Content is sil/silv (静音), or fil(噪音) skip it
+			if word.Content == "sil" || word.Content == "silv" || word.Content == "fil" {
+				continue
+			}
 			w := wordResult{
 				Word:      word.Content,
 				Score:     parseFloat(word.TotalScore),
@@ -332,21 +339,22 @@ func parseXMLResult(xmlStr string, category string) (*speechAssessResult, error)
 				DpMessage: parseInt(word.DpMessage),
 			}
 
-			// 解析音素级结果（从音节下提取音素）
-			for _, syll := range word.Sylls {
-				for _, phone := range syll.Phones {
-					// 跳过 sil/fil 等非语音音素
-					if phone.RecNodeType == "sil" || phone.RecNodeType == "fil" {
-						continue
-					}
-					p := phonemeResult{
-						Phoneme:   phone.Content,
-						BeginTime: parseInt(phone.BegPos),
-						EndTime:   parseInt(phone.EndPos),
-					}
-					w.Phonemes = append(w.Phonemes, p)
-				}
-			}
+			// TODO: 解析Phone音素层，告诉用户具体哪里发音不对
+			// // 解析音素级结果（从音节下提取音素）
+			// for _, syll := range word.Sylls {
+			// 	for _, phone := range syll.Phones {
+			// 		// 跳过 sil/fil 等非语音音素
+			// 		if phone.Content == "sil" || phone.Content == "fil" {
+			// 			continue
+			// 		}
+			// 		p := phonemeResult{
+			// 			Phoneme:   phone.Content,
+			// 			BeginTime: parseInt(phone.BegPos),
+			// 			EndTime:   parseInt(phone.EndPos),
+			// 		}
+			// 		w.Phonemes = append(w.Phonemes, p)
+			// 	}
+			// }
 
 			assessResult.Words = append(assessResult.Words, w)
 		}

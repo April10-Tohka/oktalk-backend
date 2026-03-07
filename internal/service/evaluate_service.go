@@ -99,19 +99,21 @@ type WordDetail struct {
 
 // EvaluationResultResponse 发音评测完整结果
 type EvaluationResultResponse struct {
-	EvalID           string            `json:"eval_id"`
-	Status           string            `json:"status"`
-	Message          string            `json:"message,omitempty"`
-	TextID           string            `json:"text_id,omitempty"`
-	ReferenceText    string            `json:"reference_text,omitempty"`
-	OverallScore     float64           `json:"overall_score,omitempty"`
-	Scores           *EvalScores       `json:"scores,omitempty"`
-	DurationMs       int               `json:"duration_ms,omitempty"`
-	ProblemWords     []string          `json:"problem_words,omitempty"`
-	DetailedFeedback *DetailedFeedback `json:"detailed_feedback,omitempty"`
-	ReferenceAudio   string            `json:"reference_audio,omitempty"`
-	CreatedAt        string            `json:"created_at,omitempty"`
-	ErrorMessage     string            `json:"error_message,omitempty"`
+	EvalID               string            `json:"eval_id"`
+	Status               string            `json:"status"`
+	Message              string            `json:"message,omitempty"`
+	TextID               string            `json:"text_id,omitempty"`
+	ReferenceText        string            `json:"reference_text,omitempty"`
+	OverallScore         float64           `json:"overall_score,omitempty"`
+	Scores               *EvalScores       `json:"scores,omitempty"`
+	DurationMs           int               `json:"duration_ms,omitempty"`
+	ProblemWords         []string          `json:"problem_words,omitempty"`
+	DetailedFeedback     *DetailedFeedback `json:"detailed_feedback,omitempty"`
+	ReferenceAudio       string            `json:"reference_audio,omitempty"`
+	DemoSentenceAudioURL string            `json:"demo_sentence_audio_url,omitempty"`
+	ProblemWordAudioURLs map[string]string `json:"problem_word_audio_urls,omitempty"`
+	CreatedAt            string            `json:"created_at,omitempty"`
+	ErrorMessage         string            `json:"error_message,omitempty"`
 }
 
 // EvalScores 评测分项得分
@@ -245,9 +247,9 @@ func (s *evaluateServiceImpl) EvaluateMVP(ctx context.Context, req *EvaluateMVPR
 	}
 	logger.InfoContext(ctx, "evaluate mvp assess done",
 		"total_score", evalResult.TotalScore,
-		"accuracy", evalResult.Accuracy,
-		"fluency", evalResult.Fluency,
-		"completeness", evalResult.Completeness,
+		"accuracy", evalResult.AccuracyScore,
+		"fluency", evalResult.FluencyScore,
+		"completeness", evalResult.IntegrityScore,
 	)
 
 	// ─── 3. 计算反馈级别 S/A/B/C ───
@@ -258,8 +260,6 @@ func (s *evaluateServiceImpl) EvaluateMVP(ctx context.Context, req *EvaluateMVPR
 
 	// ─── 4. 识别问题单词 ───
 	var problemWords []string
-	var worstWord string
-	var worstWordScore float64 = 100
 	wordDetails := make([]WordDetail, 0, len(evalResult.Words))
 
 	for _, w := range evalResult.Words {
@@ -272,14 +272,10 @@ func (s *evaluateServiceImpl) EvaluateMVP(ctx context.Context, req *EvaluateMVPR
 		if isProblem {
 			problemWords = append(problemWords, w.Word)
 		}
-		if w.Score < worstWordScore {
-			worstWordScore = w.Score
-			worstWord = w.Word
-		}
 	}
 
 	// ─── 5. LLM 生成反馈文本 ───
-	systemPrompt, userMessage := buildPromptByLevel(feedbackLevel, targetText, score, worstWord, worstWordScore)
+	systemPrompt, userMessage := buildPromptByLevel(feedbackLevel, targetText, score, problemWords)
 	feedbackText, err := s.llmProvider.Chat(ctx, systemPrompt, userMessage)
 	if err != nil {
 		logger.ErrorContext(ctx, "evaluate mvp llm failed", "error", err)
@@ -303,10 +299,10 @@ func (s *evaluateServiceImpl) EvaluateMVP(ctx context.Context, req *EvaluateMVPR
 	switch feedbackLevel {
 	case "A", "B":
 		// 问题单词示范
-		if worstWord != "" {
-			demoText = worstWord
+		if len(problemWords) > 0 {
+			demoText = problemWords[0]
 			demoType = "word"
-			demoAudioData, err = s.ttsProvider.Synthesize(ctx, worstWord, nil)
+			demoAudioData, err = s.ttsProvider.Synthesize(ctx, problemWords[0], nil)
 			if err != nil {
 				logger.ErrorContext(ctx, "evaluate mvp tts demo word failed", "error", err)
 			}
@@ -361,9 +357,9 @@ func (s *evaluateServiceImpl) EvaluateMVP(ctx context.Context, req *EvaluateMVPR
 			UserID:           req.UserID,
 			TargetText:       targetText,
 			OverallScore:     int(score),
-			AccuracyScore:    int(evalResult.Accuracy),
-			FluencyScore:     int(evalResult.Fluency),
-			IntegrityScore:   int(evalResult.Completeness),
+			AccuracyScore:    int(evalResult.AccuracyScore),
+			FluencyScore:     int(evalResult.FluencyScore),
+			IntegrityScore:   int(evalResult.IntegrityScore),
 			FeedbackLevel:    feedbackLevel,
 			FeedbackText:     strPtr(feedbackText),
 			FeedbackAudioURL: strPtr(feedbackAudioURL),
@@ -375,7 +371,7 @@ func (s *evaluateServiceImpl) EvaluateMVP(ctx context.Context, req *EvaluateMVPR
 			evaluation.DemoSentenceAudioURL = strPtr(demoAudioURL)
 		}
 		if demoAudio != nil && demoType == "word" {
-			evaluation.ProblemWordAudioURLs = model.StringMap{worstWord: demoAudioURL}
+			evaluation.ProblemWordAudioURLs = model.StringMap{problemWords[0]: demoAudioURL}
 		}
 
 		if saveErr := s.repos.PronunciationEvaluation.Create(ctx, evaluation); saveErr != nil {
@@ -390,9 +386,9 @@ func (s *evaluateServiceImpl) EvaluateMVP(ctx context.Context, req *EvaluateMVPR
 		OverallScore:     score,
 		FeedbackLevel:    feedbackLevel,
 		LevelText:        levelText,
-		AccuracyScore:    evalResult.Accuracy,
-		FluencyScore:     evalResult.Fluency,
-		IntegrityScore:   evalResult.Completeness,
+		AccuracyScore:    evalResult.AccuracyScore,
+		FluencyScore:     evalResult.FluencyScore,
+		IntegrityScore:   evalResult.IntegrityScore,
 		FeedbackText:     feedbackText,
 		FeedbackAudioURL: feedbackAudioURL,
 		DemoAudio:        demoAudio,
@@ -430,6 +426,7 @@ var textIDMap = map[string]string{
 	"text_018": "They watch TV in the evening",
 	"text_019": "I can play the piano",
 	"text_020": "She writes stories",
+	"text_021": "I love Grace. She is quite beautiful girl.",
 }
 
 // levelTextMap 反馈级别文本
@@ -472,14 +469,14 @@ func calculateFeedbackLevel(ctx context.Context, repos *db.Repositories, score f
 }
 
 // buildPromptByLevel 根据反馈级别构建 LLM Prompt
-func buildPromptByLevel(level, targetText string, score float64, problemWord string, wordScore float64) (system string, user string) {
+func buildPromptByLevel(level, targetText string, score float64, problemWords []string) (system string, user string) {
 	switch level {
 	case "S":
 		return llmPrompts.BuildSLevelPrompt(targetText, score)
 	case "A":
-		return llmPrompts.BuildALevelPrompt(targetText, score, problemWord, wordScore)
+		return llmPrompts.BuildALevelPrompt(targetText, score, problemWords)
 	case "B":
-		return llmPrompts.BuildBLevelPrompt(targetText, score, problemWord, wordScore)
+		return llmPrompts.BuildBLevelPrompt(targetText, score, problemWords)
 	case "C":
 		return llmPrompts.BuildCLevelPrompt(targetText, score)
 	default:
@@ -683,9 +680,11 @@ func (s *evaluateServiceImpl) GetEvaluationResult(ctx context.Context, evalID st
 				Fluency:       evalResult.FluencyScore,
 				Integrity:     evalResult.IntegrityScore,
 			},
-			ProblemWords:   problemWords,
-			ReferenceAudio: evalResult.AudioURL,
-			CreatedAt:      time.Unix(evalResult.CreatedAt, 0).Format(time.RFC3339),
+			ProblemWords:         problemWords,
+			ReferenceAudio:       evalResult.AudioURL,
+			DemoSentenceAudioURL: evalResult.DemoSentenceAudioURL,
+			ProblemWordAudioURLs: evalResult.ProblemWordAudioURLs,
+			CreatedAt:            time.Unix(evalResult.CreatedAt, 0).Format(time.RFC3339),
 		}
 
 		return resp, nil
@@ -819,13 +818,12 @@ func (p *EvalTaskProcessor) Process(ctx context.Context, task *worker.Task) (int
 	score := evalResult.TotalScore
 	feedbackLevel := calculateFeedbackLevel(ctx, p.repos, score)
 
-	var problemWords []string
-	var worstWord string
-	var worstWordScore float64 = 100
+	problemWords := make(model.StringArray, 0, len(evalResult.Words))
 	wordDetails := make([]cache.EvalWordDetail, 0, len(evalResult.Words))
 
+	// 识别问题单词，记录有问题单词
 	for _, w := range evalResult.Words {
-		isProblem := w.Score < 60
+		isProblem := w.DpMessage != 0
 		wordDetails = append(wordDetails, cache.EvalWordDetail{
 			Word:      w.Word,
 			Score:     w.Score,
@@ -834,14 +832,10 @@ func (p *EvalTaskProcessor) Process(ctx context.Context, task *worker.Task) (int
 		if isProblem {
 			problemWords = append(problemWords, w.Word)
 		}
-		if w.Score < worstWordScore {
-			worstWordScore = w.Score
-			worstWord = w.Word
-		}
 	}
 
 	// ===== A3: LLM 生成分级反馈文本 =====
-	systemPrompt, userMessage := buildPromptByLevel(feedbackLevel, targetText, score, worstWord, worstWordScore)
+	systemPrompt, userMessage := buildPromptByLevel(feedbackLevel, targetText, score, problemWords)
 	feedbackText, llmErr := p.llmProvider.Chat(ctx, systemPrompt, userMessage)
 	if llmErr != nil {
 		p.logger.Warn("Eval LLM failed, using fallback", slog.String("error", llmErr.Error()))
@@ -869,43 +863,54 @@ func (p *EvalTaskProcessor) Process(ctx context.Context, task *worker.Task) (int
 	}
 
 	// ===== A5: 条件生成示范音频 =====
-	var demoAudioData []byte
-	var demoType, demoText string
+	// 为所有问题单词生成示范音频 (A, B, C 级别都生成)
+	// 如果是 C 级，额外生成整句音频
+	var demoAudioURLs model.StringMap = make(model.StringMap)
+	var demoSentenceAudioURL string
 
-	switch feedbackLevel {
-	case "A", "B":
-		if worstWord != "" {
-			demoType = "word"
-			demoText = worstWord
-			demoAudioData, _ = p.ttsProvider.Synthesize(ctx, worstWord, nil)
+	if p.ttsProvider != nil && p.ossProvider != nil {
+		// 生成单词音频
+		for _, word := range problemWords {
+			if word == "" {
+				continue
+			}
+			demoAudioData, ttsErr := p.ttsProvider.Synthesize(ctx, word, nil)
+			if ttsErr == nil && len(demoAudioData) > 0 {
+				demoKey := fmt.Sprintf("evaluate/%s/demo_word_%s_%s.mp3", evalID, word, time.Now().Format("20060102150405"))
+				if url, uploadErr := p.ossProvider.UploadAudio(ctx, demoKey, demoAudioData); uploadErr == nil {
+					demoAudioURLs[word] = url
+				} else {
+					p.logger.Error("upload eval demo audio failed", slog.String("word", word), slog.String("error", uploadErr.Error()))
+				}
+			} else if ttsErr != nil {
+				p.logger.Warn("Eval TTS demo word failed", slog.String("word", word), slog.String("error", ttsErr.Error()))
+			}
 		}
-	case "C":
-		demoType = "sentence"
-		demoText = targetText
-		demoAudioData, _ = p.ttsProvider.Synthesize(ctx, targetText, nil)
+
+		// C 级额外生成整句音频
+		if feedbackLevel == "C" && targetText != "" {
+			demoAudioData, ttsErr := p.ttsProvider.Synthesize(ctx, targetText, nil)
+			if ttsErr == nil && len(demoAudioData) > 0 {
+				demoKey := fmt.Sprintf("evaluate/%s/demo_sentence_%s.mp3", evalID, time.Now().Format("20060102150405"))
+				if url, uploadErr := p.ossProvider.UploadAudio(ctx, demoKey, demoAudioData); uploadErr == nil {
+					demoSentenceAudioURL = url
+				} else {
+					p.logger.Error("upload eval demo sentence failed", slog.String("error", uploadErr.Error()))
+				}
+			}
+		}
 	}
 
-	// ===== A6: 上传音频到 OSS =====
+	// ===== A6: 上传 Feedback 音频到 OSS =====
 	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "oss")
 
-	var feedbackAudioURL, demoAudioURL string
-
-	if p.ossProvider != nil {
-		if len(feedbackAudio) > 0 {
-			fbKey := fmt.Sprintf("evaluate/%s/feedback_%s.mp3", evalID, uuid.New())
-			if url, uploadErr := p.ossProvider.UploadAudio(ctx, fbKey, feedbackAudio); uploadErr != nil {
-				p.logger.Error("upload eval feedback audio failed", slog.String("error", uploadErr.Error()))
-			} else {
-				feedbackAudioURL = url
-			}
-		}
-		if len(demoAudioData) > 0 {
-			demoKey := fmt.Sprintf("evaluate/%s/demo_%s.mp3", evalID, uuid.New())
-			if url, uploadErr := p.ossProvider.UploadAudio(ctx, demoKey, demoAudioData); uploadErr != nil {
-				p.logger.Error("upload eval demo audio failed", slog.String("error", uploadErr.Error()))
-			} else {
-				demoAudioURL = url
-			}
+	var feedbackAudioURL string
+	if p.ossProvider != nil && len(feedbackAudio) > 0 {
+		fbKey := fmt.Sprintf("evaluate/%s/feedback_%s.mp3", evalID, uuid.New())
+		if url, uploadErr := p.ossProvider.UploadAudio(ctx, fbKey, feedbackAudio); uploadErr != nil {
+			p.logger.Error("upload eval feedback audio failed", slog.String("error", uploadErr.Error()))
+		} else {
+			feedbackAudioURL = url
 		}
 	}
 
@@ -916,19 +921,24 @@ func (p *EvalTaskProcessor) Process(ctx context.Context, task *worker.Task) (int
 		// update evaluation record
 		evaluation, err := p.repos.PronunciationEvaluation.GetByID(ctx, evalID)
 		if err == nil && evaluation != nil {
+			evaluation.AssessmentSID = &evalResult.Sid
+			evaluation.SpeechAssessmentJSON = &evalResult.RawXML
 			evaluation.OverallScore = int(score)
-			evaluation.AccuracyScore = int(evalResult.Accuracy)
-			evaluation.FluencyScore = int(evalResult.Fluency)
-			evaluation.IntegrityScore = int(evalResult.Completeness)
+			evaluation.AccuracyScore = int(evalResult.AccuracyScore)
+			evaluation.FluencyScore = int(evalResult.FluencyScore)
+			evaluation.IntegrityScore = int(evalResult.IntegrityScore)
 			evaluation.FeedbackLevel = feedbackLevel
 			evaluation.FeedbackText = strPtr(feedbackText)
 			evaluation.FeedbackAudioURL = strPtr(feedbackAudioURL)
 			evaluation.Status = "completed"
-			if demoType == "sentence" && demoAudioURL != "" {
-				evaluation.DemoSentenceAudioURL = strPtr(demoAudioURL)
+			if demoSentenceAudioURL != "" {
+				evaluation.DemoSentenceAudioURL = strPtr(demoSentenceAudioURL)
 			}
-			if demoType == "word" && worstWord != "" && demoAudioURL != "" {
-				evaluation.ProblemWordAudioURLs = model.StringMap{worstWord: demoAudioURL}
+			if len(demoAudioURLs) > 0 {
+				evaluation.ProblemWordAudioURLs = demoAudioURLs
+			}
+			if len(problemWords) > 0 {
+				evaluation.ProblemWords = problemWords
 			}
 			if updateErr := p.repos.PronunciationEvaluation.Update(ctx, evaluation); updateErr != nil {
 				p.logger.Error("update eval db failed", slog.String("error", updateErr.Error()))
@@ -936,25 +946,27 @@ func (p *EvalTaskProcessor) Process(ctx context.Context, task *worker.Task) (int
 		} else {
 			// Fallback: create if missing
 			evaluation := &model.PronunciationEvaluation{
-				ID:               evalID,
-				UserID:           task.UserID,
-				TargetText:       targetText,
-				OverallScore:     int(score),
-				AccuracyScore:    int(evalResult.Accuracy),
-				FluencyScore:     int(evalResult.Fluency),
-				IntegrityScore:   int(evalResult.Completeness),
-				FeedbackLevel:    feedbackLevel,
-				FeedbackText:     strPtr(feedbackText),
-				FeedbackAudioURL: strPtr(feedbackAudioURL),
-				ProblemWords:     model.StringArray(problemWords),
-				DifficultyLevel:  payload.DifficultyLevel,
-				Status:           "completed",
+				ID:                   evalID,
+				UserID:               task.UserID,
+				TargetText:           targetText,
+				OverallScore:         int(score),
+				AccuracyScore:        int(evalResult.AccuracyScore),
+				FluencyScore:         int(evalResult.FluencyScore),
+				IntegrityScore:       int(evalResult.IntegrityScore),
+				FeedbackLevel:        feedbackLevel,
+				FeedbackText:         strPtr(feedbackText),
+				FeedbackAudioURL:     strPtr(feedbackAudioURL),
+				ProblemWords:         problemWords,
+				DifficultyLevel:      payload.DifficultyLevel,
+				Status:               "completed",
+				AssessmentSID:        &evalResult.Sid,
+				SpeechAssessmentJSON: &evalResult.RawXML,
 			}
-			if demoType == "sentence" && demoAudioURL != "" {
-				evaluation.DemoSentenceAudioURL = strPtr(demoAudioURL)
+			if demoSentenceAudioURL != "" {
+				evaluation.DemoSentenceAudioURL = strPtr(demoSentenceAudioURL)
 			}
-			if demoType == "word" && worstWord != "" && demoAudioURL != "" {
-				evaluation.ProblemWordAudioURLs = model.StringMap{worstWord: demoAudioURL}
+			if len(demoAudioURLs) > 0 {
+				evaluation.ProblemWordAudioURLs = demoAudioURLs
 			}
 
 			for dbRetry := 0; dbRetry < 3; dbRetry++ {
@@ -980,23 +992,22 @@ func (p *EvalTaskProcessor) Process(ctx context.Context, task *worker.Task) (int
 	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "completed")
 
 	result := &cache.EvalResult{
-		EvalID:         evalID,
-		UserID:         task.UserID,
-		TextID:         payload.TextID,
-		TargetText:     targetText,
-		OverallScore:   score,
-		AccuracyScore:  evalResult.Accuracy,
-		FluencyScore:   evalResult.Fluency,
-		IntegrityScore: evalResult.Completeness,
-		FeedbackLevel:  feedbackLevel,
-		FeedbackText:   feedbackText,
-		AudioURL:       feedbackAudioURL,
-		DemoAudioURL:   demoAudioURL,
-		DemoType:       demoType,
-		DemoText:       demoText,
-		ProblemWords:   problemWords,
-		WordDetails:    wordDetails,
-		CreatedAt:      time.Now().Unix(),
+		EvalID:               evalID,
+		UserID:               task.UserID,
+		TextID:               payload.TextID,
+		TargetText:           targetText,
+		OverallScore:         score,
+		AccuracyScore:        evalResult.AccuracyScore,
+		FluencyScore:         evalResult.FluencyScore,
+		IntegrityScore:       evalResult.IntegrityScore,
+		FeedbackLevel:        feedbackLevel,
+		FeedbackText:         feedbackText,
+		AudioURL:             feedbackAudioURL,
+		ProblemWordAudioURLs: demoAudioURLs,
+		DemoSentenceAudioURL: demoSentenceAudioURL,
+		ProblemWords:         problemWords,
+		WordDetails:          wordDetails,
+		CreatedAt:            time.Now().Unix(),
 	}
 
 	return result, resultKey, nil

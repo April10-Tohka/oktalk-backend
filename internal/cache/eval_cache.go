@@ -12,23 +12,22 @@ import (
 
 // EvalResult 评测结果
 type EvalResult struct {
-	EvalID         string           `json:"eval_id"`
-	UserID         string           `json:"user_id"`
-	TextID         string           `json:"text_id"`
-	TargetText     string           `json:"target_text"`
-	OverallScore   float64          `json:"overall_score"`
-	AccuracyScore  float64          `json:"accuracy_score"`
-	FluencyScore   float64          `json:"fluency_score"`
-	IntegrityScore float64          `json:"integrity_score"`
-	FeedbackLevel  string           `json:"feedback_level"`
-	FeedbackText   string           `json:"feedback_text"`
-	AudioURL       string           `json:"audio_url,omitempty"`
-	DemoAudioURL   string           `json:"demo_audio_url,omitempty"`
-	DemoType       string           `json:"demo_type,omitempty"`
-	DemoText       string           `json:"demo_text,omitempty"`
-	ProblemWords   []string         `json:"problem_words,omitempty"`
-	WordDetails    []EvalWordDetail `json:"word_details,omitempty"`
-	CreatedAt      int64            `json:"created_at"`
+	EvalID               string            `json:"eval_id"`
+	UserID               string            `json:"user_id"`
+	TextID               string            `json:"text_id"`
+	TargetText           string            `json:"target_text"`
+	OverallScore         float64           `json:"overall_score"`
+	AccuracyScore        float64           `json:"accuracy_score"`
+	FluencyScore         float64           `json:"fluency_score"`
+	IntegrityScore       float64           `json:"integrity_score"`
+	FeedbackLevel        string            `json:"feedback_level"`
+	FeedbackText         string            `json:"feedback_text"`
+	AudioURL             string            `json:"audio_url,omitempty"`
+	ProblemWordAudioURLs map[string]string `json:"problem_word_audio_urls,omitempty"`
+	DemoSentenceAudioURL string            `json:"demo_sentence_audio_url,omitempty"`
+	ProblemWords         []string          `json:"problem_words,omitempty"`
+	WordDetails          []EvalWordDetail  `json:"word_details,omitempty"`
+	CreatedAt            int64             `json:"created_at"`
 }
 
 // EvalWordDetail 单词级评测详情（缓存用）

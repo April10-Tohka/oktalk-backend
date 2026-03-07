@@ -87,19 +87,17 @@ type xmlRecPaper struct {
 
 // xmlReadItem 评测项 (句子/单词/篇章级别)
 type xmlReadItem struct {
-	AccuracyScore  string `xml:"accuracy_score,attr"`
-	StandardScore  string `xml:"standard_score,attr"`
-	FluencyScore   string `xml:"fluency_score,attr"`
-	IntegrityScore string `xml:"integrity_score,attr"`
-	PhoneScore     string `xml:"phone_score,attr"`
-	ToneScore      string `xml:"tone_score,attr"`
-	TotalScore     string `xml:"total_score,attr"`
-	BegPos         string `xml:"beg_pos,attr"`
-	EndPos         string `xml:"end_pos,attr"`
-	Content        string `xml:"content,attr"`
-	ExceptInfo     string `xml:"except_info,attr"`
-	IsRejected     string `xml:"is_rejected,attr"`
-	TimeLen        string `xml:"time_len,attr"`
+	AccuracyScore  string `xml:"accuracy_score,attr"`  //准确度评分
+	StandardScore  string `xml:"standard_score,attr"`  //标准度分
+	FluencyScore   string `xml:"fluency_score,attr"`   //流畅度评分
+	IntegrityScore string `xml:"integrity_score,attr"` //完整度评分
+	TotalScore     string `xml:"total_score,attr"`     //篇章总分
+	BegPos         string `xml:"beg_pos,attr"`         //篇章开始时间
+	EndPos         string `xml:"end_pos,attr"`         //篇章结束时间
+	Content        string `xml:"content,attr"`         //篇章内容
+	ExceptInfo     string `xml:"except_info,attr"`     //异常信息
+	IsRejected     string `xml:"is_rejected,attr"`     //是否被拒
+	WordCount      string `xml:"word_count,attr"`      //篇章全部单词数量
 
 	Sentences []xmlSentence `xml:"sentence"`
 }
@@ -109,58 +107,43 @@ type xmlSentence struct {
 	AccuracyScore string `xml:"accuracy_score,attr"`
 	StandardScore string `xml:"standard_score,attr"`
 	FluencyScore  string `xml:"fluency_score,attr"`
-	PhoneScore    string `xml:"phone_score,attr"`
-	ToneScore     string `xml:"tone_score,attr"`
 	TotalScore    string `xml:"total_score,attr"`
 	BegPos        string `xml:"beg_pos,attr"`
 	EndPos        string `xml:"end_pos,attr"`
 	Content       string `xml:"content,attr"`
-	TimeLen       string `xml:"time_len,attr"`
+	WordCount     string `xml:"word_count,attr"` //句子全部单词数量
 
 	Words []xmlWord `xml:"word"`
 }
 
 // xmlWord 单词级结果
 type xmlWord struct {
-	Content    string `xml:"content,attr"`
-	Symbol     string `xml:"symbol,attr"`
-	BegPos     string `xml:"beg_pos,attr"`
-	EndPos     string `xml:"end_pos,attr"`
-	TimeLen    string `xml:"time_len,attr"`
-	DpMessage  string `xml:"dp_message,attr"`
-	TotalScore string `xml:"total_score,attr"`
-
-	Sylls []xmlSyll `xml:"syll"`
+	Content    string    `xml:"content,attr"`
+	BegPos     string    `xml:"beg_pos,attr"`
+	EndPos     string    `xml:"end_pos,attr"`
+	DpMessage  string    `xml:"dp_message,attr"`  //单词增漏读信息
+	TotalScore string    `xml:"total_score,attr"` //单词总分
+	WerrMsg    string    `xml:"werr_msg,attr"`    //针对错误单词给出结果（正确不输出）
+	Sylls      []xmlSyll `xml:"syll"`
 }
 
 // xmlSyll 音节级结果
 type xmlSyll struct {
-	Content     string `xml:"content,attr"`
-	Symbol      string `xml:"symbol,attr"`
-	BegPos      string `xml:"beg_pos,attr"`
-	EndPos      string `xml:"end_pos,attr"`
-	TimeLen     string `xml:"time_len,attr"`
-	DpMessage   string `xml:"dp_message,attr"`
-	RecNodeType string `xml:"rec_node_type,attr"`
-	SyllScore   string `xml:"syll_score,attr"`
-	SerrMsg     string `xml:"serr_msg,attr"`
-	SyllAccent  string `xml:"syll_accent,attr"`
+	Content    string `xml:"content,attr"`
+	BegPos     string `xml:"beg_pos,attr"`
+	EndPos     string `xml:"end_pos,attr"`
+	SerrMsg    string `xml:"serr_msg,attr"`
+	SyllAccent string `xml:"syll_accent,attr"`
 
 	Phones []xmlPhone `xml:"phone"`
 }
 
 // xmlPhone 音素级结果
 type xmlPhone struct {
-	Content      string `xml:"content,attr"`
-	BegPos       string `xml:"beg_pos,attr"`
-	EndPos       string `xml:"end_pos,attr"`
-	TimeLen      string `xml:"time_len,attr"`
-	DpMessage    string `xml:"dp_message,attr"`
-	RecNodeType  string `xml:"rec_node_type,attr"`
-	IsYun        string `xml:"is_yun,attr"`
-	PerrMsg      string `xml:"perr_msg,attr"`
-	PerrLevelMsg string `xml:"perr_level_msg,attr"`
-	MonoTone     string `xml:"mono_tone,attr"`
+	Content   string `xml:"content,attr"`
+	BegPos    string `xml:"beg_pos,attr"`
+	EndPos    string `xml:"end_pos,attr"`
+	DpMessage string `xml:"dp_message,attr"`
 }
 
 // ===================== 内部 SDK 数据结构 =====================
@@ -175,12 +158,16 @@ type speechAssessRequest struct {
 
 // speechAssessResult 语音评测结果 (从 XML 解析后的中间结构)
 type speechAssessResult struct {
-	TotalScore   float64
-	Accuracy     float64
-	Fluency      float64
-	Completeness float64 // IntegrityScore
-	Intonation   float64 // StandardScore (用作语调)
-	Words        []wordResult
+	Sid            string  // 语音评测会话 ID
+	RawXML         string  // 原始 XML 结果
+	TotalScore     float64 // 总分
+	AccuracyScore  float64 // 准确度评分
+	FluencyScore   float64 // 流畅度评分
+	IntegrityScore float64 // 完整度评分
+	StandardScore  float64 // 标准度评分
+	IsRejected     bool    // 是否被拒绝
+	ExceptInfo     string  // 异常信息  28673无语音或音量小类型 28676乱说类型 28689没有音频输入，请检测音频或录音设备是否正常
+	Words          []wordResult
 }
 
 // wordResult 单词评测结果
@@ -189,7 +176,7 @@ type wordResult struct {
 	Score     float64
 	BeginTime int
 	EndTime   int
-	DpMessage int // 0正常 16漏读 32增读 64回读 128替换
+	DpMessage int // 0正常 16漏读 32增读
 	Phonemes  []phonemeResult
 }
 
