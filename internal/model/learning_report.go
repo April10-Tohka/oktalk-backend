@@ -25,6 +25,10 @@ type LearningReport struct {
 	// PeriodEndDate 统计周期结束日期
 	PeriodEndDate time.Time `gorm:"type:date;not null" json:"period_end_date" validate:"required"`
 
+	// TaskID 对应的异步任务ID，幂等返回时直接返回此字段供客户端轮询
+	// 可为空（历史数据兼容）
+	TaskID string `gorm:"type:varchar(100);default:''" json:"task_id"`
+
 	// === 统计数据 ===
 	// TotalConversations 总对话数
 	TotalConversations int `gorm:"type:int;default:0;not null" json:"total_conversations" validate:"gte=0"`

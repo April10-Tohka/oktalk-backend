@@ -3,6 +3,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"gorm.io/gorm"
@@ -24,6 +25,12 @@ type LearningReportRepository interface {
 	GetByUserIDAndPeriod(ctx context.Context, userID string, start, end time.Time) (*model.LearningReport, error)
 	GetLatestByUserID(ctx context.Context, userID string) (*model.LearningReport, error)
 	GetLatestByUserIDAndType(ctx context.Context, userID, reportType string) (*model.LearningReport, error)
+
+	// FindLatestByUserAndPeriod 查询同一用户、同一报告类型、同一周期内最近一次报告
+	// 若不存在返回 nil, nil（不报错）
+	FindLatestByUserAndPeriod(ctx context.Context, userID, reportType string, periodStart, periodEnd time.Time) (*model.LearningReport, error)
+	// UpdateTaskID 更新报告的 TaskID
+	UpdateTaskID(ctx context.Context, reportID string, taskID string) error
 
 	// 统计方法
 	Count(ctx context.Context) (int64, error)
@@ -182,6 +189,32 @@ func (r *learningReportRepository) GetLatestByUserIDAndType(ctx context.Context,
 		return nil, WrapDBError(err, "get latest learning report by type")
 	}
 	return &report, nil
+}
+
+// FindLatestByUserAndPeriod 查询同一用户、同一报告类型、同一周期内最近一次报告
+func (r *learningReportRepository) FindLatestByUserAndPeriod(ctx context.Context, userID, reportType string, periodStart, periodEnd time.Time) (*model.LearningReport, error) {
+	var report model.LearningReport
+	err := r.db.WithContext(ctx).
+		Where("user_id = ? AND report_type = ? AND period_start_date = ? AND period_end_date = ?", userID, reportType, periodStart, periodEnd).
+		Order("created_at DESC").
+		First(&report).Error
+
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil // 查无结果不报错
+		}
+		return nil, WrapDBError(err, "find latest learning report by period")
+	}
+	return &report, nil
+}
+
+// UpdateTaskID 更新报告的 TaskID
+func (r *learningReportRepository) UpdateTaskID(ctx context.Context, reportID string, taskID string) error {
+	err := r.db.WithContext(ctx).
+		Model(&model.LearningReport{}).
+		Where("id = ?", reportID).
+		Update("task_id", taskID).Error
+	return WrapDBError(err, "update learning report task_id")
 }
 
 // Count 统计学习报告总数

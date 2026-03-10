@@ -508,7 +508,6 @@ func (s *reportServiceImpl) GenerateReport(ctx context.Context, req *GenerateRep
 		periodStart = time.Date(now.Year(), now.Month(), now.Day()-weekday+1, 0, 0, 0, 0, now.Location())
 		periodEnd = periodStart.AddDate(0, 0, 7).Add(-time.Nanosecond)
 	}
-
 	// 步骤 4：检查数据量是否足够
 	evalStats, _ := s.repos.PronunciationEvaluation.GetStatsByUserAndDateRange(ctx, req.UserID, periodStart, periodEnd)
 	convStats, _ := s.repos.VoiceConversation.GetStatsByUserAndDateRange(ctx, req.UserID, periodStart, periodEnd)
@@ -523,7 +522,48 @@ func (s *reportServiceImpl) GenerateReport(ctx context.Context, req *GenerateRep
 		return "", fmt.Errorf("数据不足，至少需要 3 条学习记录（当前 %d 条）", activityCount)
 	}
 
-	// 步骤 4.5：限流检查
+	// 步骤 4.5：幂等检查（冷却期机制）
+	// 查询同一用户、同一类型、同一周期内最近一次报告
+	lastReport, err := s.repos.LearningReport.FindLatestByUserAndPeriod(
+		ctx, req.UserID, reportType, periodStart, periodEnd,
+	)
+	if err != nil {
+		// 查询失败不阻断流程，记录日志后继续生成
+		s.logger.WarnContext(ctx, "check idempotency failed, continue generating",
+			"user_id", req.UserID,
+			"report_type", reportType,
+			"error", err,
+		)
+	} else if lastReport != nil && lastReport.TaskID != "" {
+		// 硬编码冷却期：月报 6 小时，周报 2 小时
+		var cooldown time.Duration
+		if reportType == "monthly" {
+			cooldown = 6 * time.Hour
+		} else {
+			cooldown = 2 * time.Hour
+		}
+
+		elapsed := time.Since(lastReport.CreatedAt)
+		if elapsed < cooldown {
+			// 在冷却期内，直接返回已有 task_id（幂等）
+			s.logger.InfoContext(ctx, "report already exists within cooldown, returning existing task",
+				"user_id", req.UserID,
+				"report_type", reportType,
+				"existing_task_id", lastReport.TaskID,
+				"elapsed", elapsed.String(),
+				"cooldown", cooldown.String(),
+			)
+			return lastReport.TaskID, nil
+		}
+		// 超过冷却期，记录日志后继续生成新报告
+		s.logger.InfoContext(ctx, "cooldown expired, regenerating report",
+			"user_id", req.UserID,
+			"report_type", reportType,
+			"elapsed", elapsed.String(),
+		)
+	}
+
+	// 步骤 4.6：限流检查
 	if err := checkRateLimit(ctx, s.rateLimitFactory, "report_generate", req.UserID, s.logger); err != nil {
 		return "", err
 	}
@@ -532,9 +572,11 @@ func (s *reportServiceImpl) GenerateReport(ctx context.Context, req *GenerateRep
 	reportID := uuid.New()
 	if s.repos != nil {
 		reportModel := &model.LearningReport{
-			ID:         reportID,
-			UserID:     req.UserID,
-			ReportType: reportType,
+			ID:              reportID,
+			UserID:          req.UserID,
+			ReportType:      reportType,
+			PeriodStartDate: periodStart,
+			PeriodEndDate:   periodEnd,
 		}
 		if err := s.repos.LearningReport.Create(ctx, reportModel); err != nil {
 			return "", fmt.Errorf("create report model: %w", err)
@@ -565,6 +607,16 @@ func (s *reportServiceImpl) GenerateReport(ctx context.Context, req *GenerateRep
 	if err != nil {
 		logger.ErrorContext(ctx, "submit report task failed", "error", err)
 		return "", fmt.Errorf("submit task: %w", err)
+	}
+
+	// 回写 task_id 到报告记录，供后续幂等查询返回
+	if updateErr := s.repos.LearningReport.UpdateTaskID(ctx, reportID, taskID); updateErr != nil {
+		// 回写失败不影响主流程，仅记录日志
+		logger.WarnContext(ctx, "update report task_id failed",
+			"report_id", reportID,
+			"task_id", taskID,
+			"error", updateErr,
+		)
 	}
 
 	logger.InfoContext(ctx, "report task submitted",
