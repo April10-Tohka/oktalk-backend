@@ -2,6 +2,8 @@
 // 用于依赖注入时统一传递所有 Handler
 package handler
 
+import "pronunciation-correction-system/internal/handler/freetalk"
+
 // Handlers 所有 HTTP Handler 的聚合
 type Handlers struct {
 	Auth     *AuthHandler
@@ -10,4 +12,5 @@ type Handlers struct {
 	Evaluate *EvaluateHandler
 	Report   *ReportHandler
 	System   *SystemHandler
+	FreeTalk *freetalk.Handler
 }

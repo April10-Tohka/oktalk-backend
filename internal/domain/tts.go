@@ -22,7 +22,46 @@ type TTSProvider interface {
 	// SynthesizeMultiple 批量合成（多段文本拼接为一个音频）
 	SynthesizeMultiple(ctx context.Context, texts []string, options *SynthesizeOptions) ([]byte, error)
 
+	// ConnectTTS 建立流式 TTS 长连接（用于 Free Talk 模式）
+	// 返回 TTSStreamer，支持在同一连接上执行多个合成任务（每轮对话一个任务）。
+	// 使用流程：RunTask() → FeedText() * N → FinishTask() → 等待 TaskDone() → 再次 RunTask()...
+	// 参数:
+	//   - ctx: 上下文，控制整个连接的生命周期
+	//   - options: 合成选项（音色、格式、采样率等）
+	// 返回:
+	//   - TTSStreamer: 流式 TTS 操作接口
+	//   - error: 连接或初始化错误
+	ConnectTTS(ctx context.Context, options *SynthesizeOptions) (TTSStreamer, error)
+
 	// Close 关闭客户端，释放资源
+	Close() error
+}
+
+// TTSStreamer 流式 TTS 连接接口（会话级）
+// 用于 Free Talk 模式下的多轮文本推送和音频接收。
+// 每个 TTSStreamer 对应一个 WebSocket 连接，可以在上面执行多个合成任务。
+type TTSStreamer interface {
+	// RunTask 启动新的合成任务（发送 run-task 指令）
+	// 每轮对话开始时调用，阻塞直到收到 task-started 或超时
+	RunTask(ctx context.Context) error
+
+	// FeedText 向当前任务推送文本片段（发送 continue-task 指令）
+	// 在 LLM 流式生成过程中，每积累一段文本就调用一次
+	FeedText(ctx context.Context, text string) error
+
+	// FinishTask 通知当前任务文本发送完毕（发送 finish-task 指令）
+	// LLM 生成结束后调用，CosyVoice 将继续返回剩余音频直到 task-finished
+	FinishTask(ctx context.Context) error
+
+	// AudioChan 返回接收合成音频数据的通道
+	// 音频以 PCM/MP3 二进制块形式推送，通道在 Close() 时关闭
+	AudioChan() <-chan []byte
+
+	// TaskDone 返回一个通道，当前任务完成（task-finished）时关闭
+	// 每次 RunTask 后会重新创建此通道
+	TaskDone() <-chan struct{}
+
+	// Close 关闭 WebSocket 连接并释放所有资源
 	Close() error
 }
 

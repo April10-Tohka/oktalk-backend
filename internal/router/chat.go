@@ -5,6 +5,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"pronunciation-correction-system/internal/handler"
+	"pronunciation-correction-system/internal/handler/freetalk"
 )
 
 // setupChatRoutes 注册 AI 语音对话路由（需认证）
@@ -27,4 +28,9 @@ func setupChatRoutes(rg *gin.RouterGroup, h *handler.ChatHandler) {
 		chat.GET("/sessions", h.GetSessions)
 		chat.POST("/feedback", h.SubmitChatFeedback)
 	}
+}
+
+// setupFreeTalkRoutes 注册 Free Talk WebSocket 路由（需认证）
+func setupFreeTalkRoutes(rg *gin.RouterGroup, h *freetalk.Handler) {
+	rg.GET("/chat/freetalk", h.HandleWebSocket)
 }

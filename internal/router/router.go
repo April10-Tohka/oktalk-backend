@@ -45,11 +45,12 @@ func Setup(cfg *config.Config, handlers *handler.Handlers, rdb *redis.Client) *g
 		{
 			// 需要认证的 auth 路由（logout、token/refresh 由 auth 模块自行处理）
 			setupAuthProtectedRoutes(authed, handlers.Auth)
-			setupChatRoutes(authed, handlers.Chat)         // AI 语音对话
-			setupEvaluateRoutes(authed, handlers.Evaluate) // AI 发音纠正
-			setupReportRoutes(authed, handlers.Report)     // 智能学习报告
-			setupUserRoutes(authed, handlers.User)         // 用户信息
-			setupResourceRoutes(authed, handlers.System)   // 学习资源
+			setupChatRoutes(authed, handlers.Chat)             // AI 语音对话
+			setupFreeTalkRoutes(authed, handlers.FreeTalk)     // Free Talk WebSocket
+			setupEvaluateRoutes(authed, handlers.Evaluate)     // AI 发音纠正
+			setupReportRoutes(authed, handlers.Report)         // 智能学习报告
+			setupUserRoutes(authed, handlers.User)             // 用户信息
+			setupResourceRoutes(authed, handlers.System)       // 学习资源
 		}
 	}
 

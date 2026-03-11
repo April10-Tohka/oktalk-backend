@@ -13,6 +13,12 @@ type LLMProvider interface {
 	// ChatWithHistory 多轮对话：给定完整的对话历史，返回 AI 生成的文本
 	ChatWithHistory(ctx context.Context, messages []ChatMessage) (string, error)
 
+	// ChatStream 流式多轮对话（用于 Free Talk 模式）
+	// 给定完整的对话历史，流式回调每个生成的 token。
+	// onToken: 每生成一个 token 回调一次，传入增量文本片段
+	// 方法阻塞直到生成完成或出错
+	ChatStream(ctx context.Context, messages []ChatMessage, onToken func(token string)) error
+
 	// Close 关闭客户端，释放资源
 	Close() error
 }

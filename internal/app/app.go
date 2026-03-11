@@ -16,6 +16,7 @@ import (
 	"pronunciation-correction-system/internal/db"
 	"pronunciation-correction-system/internal/domain"
 	"pronunciation-correction-system/internal/handler"
+	"pronunciation-correction-system/internal/handler/freetalk"
 	infraASR "pronunciation-correction-system/internal/infrastructure/asr/aliyun"
 	infraXF "pronunciation-correction-system/internal/infrastructure/evalution/xf"
 	infraLLM "pronunciation-correction-system/internal/infrastructure/llm/qwen"
@@ -307,6 +308,13 @@ func (a *App) initHandlers() {
 		Evaluate: handler.NewEvaluateHandler(a.EvaluateService),
 		Report:   handler.NewReportHandler(a.ReportService),
 		System:   handler.NewSystemHandler(),
+		FreeTalk: freetalk.NewHandler(
+			a.ASRProvider,
+			a.LLMProvider,
+			a.TTSProvider,
+			a.Repos,
+			&a.Config.FreeTalk,
+		),
 	}
 	log.Println("[App] Handlers initialized")
 }

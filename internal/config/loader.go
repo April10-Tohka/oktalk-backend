@@ -123,4 +123,14 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("log.file.max_backups", 30)
 	v.SetDefault("log.file.max_age", 7)
 	v.SetDefault("log.file.compress", true)
+
+	// Free Talk 默认配置
+	v.SetDefault("freetalk.system_prompt", "You are a friendly English tutor for children. Speak in simple, encouraging English. Help the child practice spoken English through natural conversation. Keep responses short and age-appropriate.")
+	v.SetDefault("freetalk.tts_voice", "longxiaochun")
+	v.SetDefault("freetalk.tts_format", "pcm")
+	v.SetDefault("freetalk.tts_sample_rate", 16000)
+	v.SetDefault("freetalk.asr_format", "pcm")
+	v.SetDefault("freetalk.asr_sample_rate", 16000)
+	v.SetDefault("freetalk.text_flush_len", 20)
+	v.SetDefault("freetalk.max_turn_history", 10)
 }

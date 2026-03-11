@@ -17,6 +17,27 @@ type Config struct {
 	SMS        SMSConfig        `mapstructure:"sms"`
 	Log        LogConfig        `mapstructure:"log"`
 	RateLimit  RateLimitConfig  `mapstructure:"rate_limit"`
+	FreeTalk   FreeTalkConfig   `mapstructure:"freetalk"`
+}
+
+// FreeTalkConfig Free Talk 实时语音对话配置
+type FreeTalkConfig struct {
+	// SystemPrompt LLM 系统提示词
+	SystemPrompt string `mapstructure:"system_prompt"`
+	// TTSVoice TTS 音色
+	TTSVoice string `mapstructure:"tts_voice"`
+	// TTSFormat TTS 输出格式（pcm/mp3）
+	TTSFormat string `mapstructure:"tts_format"`
+	// TTSSampleRate TTS 采样率
+	TTSSampleRate int `mapstructure:"tts_sample_rate"`
+	// ASRFormat ASR 输入格式
+	ASRFormat string `mapstructure:"asr_format"`
+	// ASRSampleRate ASR 采样率
+	ASRSampleRate int `mapstructure:"asr_sample_rate"`
+	// TextFlushLen 积累多少字符后推送到 TTS
+	TextFlushLen int `mapstructure:"text_flush_len"`
+	// MaxTurnHistory 发送给 LLM 的最大历史轮次数
+	MaxTurnHistory int `mapstructure:"max_turn_history"`
 }
 
 // ===================== 服务器 & 基础设施 =====================

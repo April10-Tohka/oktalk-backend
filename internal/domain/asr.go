@@ -31,7 +31,31 @@ type ASRProvider interface {
 	//   - error: 连接或初始化错误
 	RecognizeAudioStream(ctx context.Context, audioData []byte, format string, sampleRate int) (<-chan *ASRStreamEvent, error)
 
+	// ConnectASR 建立流式 ASR 长连接（用于 Free Talk 模式）
+	// 与 RecognizeAudioStream 不同，此方法不一次性传入音频，而是返回一个 AudioSender，
+	// 允许调用方持续推送实时音频数据，同时通过 eventCh 接收识别结果（含 VAD 断句）。
+	// 连接在整个 Free Talk 会话期间保持不断开。
+	// 参数:
+	//   - ctx: 上下文，支持超时和取消
+	//   - format: 音频格式，如 "pcm"
+	//   - sampleRate: 采样率，如 16000
+	// 返回:
+	//   - AudioSender: 用于持续发送实时音频数据的发送器
+	//   - <-chan *ASRStreamEvent: 流式事件通道，包含中间结果和最终结果（sentence_end=true 表示断句）
+	//   - error: 连接或初始化错误
+	ConnectASR(ctx context.Context, format string, sampleRate int) (AudioSender, <-chan *ASRStreamEvent, error)
+
 	// Close 关闭客户端，释放资源
+	Close() error
+}
+
+// AudioSender 音频发送器接口（会话级长连接）
+// 用于 Free Talk 模式下持续向 ASR 引擎发送实时音频数据
+type AudioSender interface {
+	// SendAudio 发送一块音频数据
+	SendAudio(data []byte) error
+
+	// Close 发送 finish-task 并关闭连接
 	Close() error
 }
 
