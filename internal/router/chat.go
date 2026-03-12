@@ -27,6 +27,9 @@ func setupChatRoutes(rg *gin.RouterGroup, h *handler.ChatHandler) {
 		// 获取当前用户的所有会话列表
 		chat.GET("/sessions", h.GetSessions)
 		chat.POST("/feedback", h.SubmitChatFeedback)
+
+		// free talk 模式的语音对话
+		chat.POST("/freetalk", h.HandleWebSocket)
 	}
 }
 

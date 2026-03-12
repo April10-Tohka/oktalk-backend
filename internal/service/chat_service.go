@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"pronunciation-correction-system/internal/cache"
@@ -18,6 +19,8 @@ import (
 	"pronunciation-correction-system/internal/pkg/logger"
 	"pronunciation-correction-system/internal/pkg/uuid"
 	"pronunciation-correction-system/internal/worker"
+
+	"github.com/gorilla/websocket"
 )
 
 // ===== 请求结构 =====
@@ -68,6 +71,17 @@ type StartSessionRequest struct {
 	DifficultyLevel  string
 	Topic            string
 	UserID           string
+}
+
+type ValidateFreetalkRequest struct {
+	ConversationID string
+	UserID         string
+}
+
+type HandleFreetalkRequest struct {
+	Conn           *websocket.Conn
+	UserID         string
+	ConversationID string
 }
 
 // ===== 响应结构 =====
@@ -154,6 +168,12 @@ type ChatService interface {
 
 	// SubmitChatFeedback 提交对话反馈
 	SubmitChatFeedback(ctx context.Context, req *SubmitFeedbackRequest) error
+
+	// ValidateFreetalk 验证 free talk 模式语音对话请求
+	ValidateFreetalk(ctx context.Context, req *ValidateFreetalkRequest) error
+
+	// HandleFreetalk 处理 free talk 模式语音对话请求
+	HandleFreetalk(ctx context.Context, req *HandleFreetalkRequest) error
 }
 
 // ===== Service 实现 =====
@@ -716,6 +736,50 @@ func (s *chatServiceImpl) SubmitChatFeedback(ctx context.Context, req *SubmitFee
 	return nil
 }
 
+// ValidateFreetalk 验证 free talk 模式语音对话请求
+func (s *chatServiceImpl) ValidateFreetalk(ctx context.Context, req *ValidateFreetalkRequest) error {
+	// 步骤 1：速率限制检查
+	if err := checkRateLimit(ctx, s.rateLimitFactory, "chat_submit", req.UserID, s.logger); err != nil {
+		return err
+	}
+
+	// 步骤 2：验证会话存在
+	if s.conversationRepo != nil {
+		conv, err := s.conversationRepo.GetByID(ctx, req.ConversationID)
+		if err != nil {
+			logger.ErrorContext(ctx, "submit chat get session failed", "error", err)
+			return fmt.Errorf("failed to verify session: %w", err)
+		}
+		if conv == nil {
+			return fmt.Errorf("session not found: %s (use /session/start to create)", req.ConversationID)
+		}
+		if conv.UserID != req.UserID {
+			return errors.New("session does not belong to current user")
+		}
+	}
+	return nil
+}
+
+// HandleFreetalk 处理 free talk 模式语音对话请求
+func (s *chatServiceImpl) HandleFreetalk(ctx context.Context, req *HandleFreetalkRequest) error {
+	// 1. 更新会话状态为 active
+	_ = s.conversationRepo.UpdateStatus(ctx, req.ConversationID, "active")
+
+	// 2. 创建并启动 Session
+	session := NewSession(
+		req.Conn,
+		s.asrProvider,
+		s.llmProvider,
+		s.ttsProvider,
+		s.conversationRepo,
+		s.messageRepo,
+		req.ConversationID,
+		req.UserID,
+	)
+	go session.Run()
+	return nil
+}
+
 // ===================== ChatTaskProcessor =====================
 
 // chatPayloadData 异步任务 payload 反序列化目标
@@ -1018,4 +1082,272 @@ func (p *ChatResultPersister) SaveResult(ctx context.Context, task *worker.Task,
 		slog.String("type", task.Type),
 	)
 	return nil
+}
+
+// ===================== 状态机 =====================
+
+type sessionState int
+
+const (
+	stateIdle       sessionState = iota // 接收并转发用户音频
+	stateAISpeaking                     // AI 回复中，丢弃用户音频
+)
+
+// ===================== Text Frame 类型常量 =====================
+
+const (
+	// MsgTypeLLMToken LLM 流式 token（后端 → App）
+	// 每个 token 作为一条 text frame 推送，App 可实时展示打字效果
+	MsgTypeLLMToken = "llm_token"
+
+	// MsgTypeTurnEnd 本轮 AI 回复结束（后端 → App）
+	// App 收到后可恢复录音
+	MsgTypeTurnEnd = "turn_end"
+
+	// MsgTypeError 错误通知（后端 → App）
+	// 包含 code 和 message 字段
+	MsgTypeError = "error"
+
+	// MsgTypeASRText ASR 最终识别文本（后端 → App）
+	// 用于在 App 端展示用户说的话
+	MsgTypeASRText = "asr_text"
+
+	// MsgTypeASRPartial ASR 中间识别文本（后端 → App）
+	// 用于实时展示识别过程
+	MsgTypeASRPartial = "asr_partial"
+)
+
+// ===================== App → 后端（Text Frame）=====================
+
+// IncomingMessage App 发来的 Text Frame 结构
+type IncomingMessage struct {
+	// Type 消息类型: "start" / "stop"
+	// "start": 开始/恢复 Free Talk 会话
+	// "stop": 结束 Free Talk 会话
+	Type string `json:"type"`
+
+	// ConversationID 会话 ID（start 时必传）
+	ConversationID string `json:"conversation_id,omitempty"`
+}
+
+// ===================== 后端 → App（Text Frame）=====================
+
+// OutgoingMessage 后端推给 App 的 Text Frame 结构
+type OutgoingMessage struct {
+	// Type 消息类型（见上方常量）
+	Type string `json:"type"`
+
+	// Text 文本内容
+	// - llm_token: LLM 生成的增量 token
+	// - asr_text: ASR 最终识别文本
+	// - asr_partial: ASR 中间识别文本
+	// - turn_end: 空
+	Text string `json:"text,omitempty"`
+
+	// Code 错误码（仅 error 时使用）
+	Code string `json:"code,omitempty"`
+
+	// Message 错误信息（仅 error 时使用）
+	Message string `json:"message,omitempty"`
+}
+
+// ===================== Binary Frame =====================
+// Binary Frame 携带 PCM 裸音频数据，无任何包装：
+// - App → 后端：用户录音 PCM，16kHz 单声道 16bit
+// - 后端 → App：TTS 合成音频（格式由配置决定，默认 PCM）
+
+// ===================== WebSocket 内部消息类型 =====================
+
+// wsMessage 内部 WebSocket 消息封装
+// 用于 writerGoroutine 串行化所有写操作
+type wsMessage struct {
+	// messageType websocket.TextMessage 或 websocket.BinaryMessage
+	messageType int
+
+	// data 消息内容（JSON 或二进制音频）
+	data []byte
+}
+
+// ===================== Session 结构体 =====================
+
+// Session 管理单个 Free Talk WebSocket 会话的完整生命周期
+type Session struct {
+	appConn *websocket.Conn
+
+	// 注入的 domain 接口（由 Handler 创建后传入）
+	asrProvider domain.ASRProvider
+	llmProvider domain.LLMProvider
+	ttsProvider domain.TTSProvider
+
+	// 状态机
+	state   sessionState
+	stateMu sync.Mutex
+
+	// 会话信息
+	conversationID   string
+	userID           string
+	conversationRepo db.VoiceConversationRepository
+	messageRepo      db.ConversationMessageRepository
+
+	// 上下文
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+func NewSession(
+	appConn *websocket.Conn,
+	asrProvider domain.ASRProvider,
+	llmProvider domain.LLMProvider,
+	ttsProvider domain.TTSProvider,
+	conversationRepo db.VoiceConversationRepository,
+	messageRepo db.ConversationMessageRepository,
+	conversationID string,
+	userID string,
+) *Session {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Session{
+		appConn:          appConn,
+		asrProvider:      asrProvider,
+		llmProvider:      llmProvider,
+		ttsProvider:      ttsProvider,
+		conversationRepo: conversationRepo,
+		messageRepo:      messageRepo,
+		conversationID:   conversationID,
+		userID:           userID,
+		ctx:              ctx,
+		cancel:           cancel,
+		state:            stateIdle,
+	}
+}
+
+func (s *Session) Run() error {
+	audioChan := make(chan []byte, 1024)        // App音频 → ASR goroutine（转发PCM给ASR）
+	llmInputChan := make(chan string, 1024)     // ASR goroutine → LLM goroutine（触发LLM，携带识别文本）
+	llmOutputChan := make(chan llmChunk, 1024)  // LLM goroutine → TTS goroutine（流式token投喂TTS）
+	writeChan := make(chan wsMessage, 1024)     // 所有goroutine → Writer goroutine（统一写App WebSocket）
+	ttsNewTurnChan := make(chan struct{}, 1024) // ASR goroutine → TTS goroutine（触发新一轮TTS任务）
+
+	go s.readerGoroutine(audioChan)
+	go s.writerGoroutine(writeChan)
+	go s.asrGoroutine(audioChan, llmInputChan, ttsNewTurnChan)
+	go s.llmGoroutine(llmInputChan, llmOutputChan, writeChan)
+	go s.ttsGoroutine(llmOutputChan, ttsNewTurnChan, writeChan)
+	return nil
+}
+
+// ===================== ① writerGoroutine =====================
+
+// writerGoroutine 唯一负责写 appConn 的 goroutine
+// 从 writeChan 取消息 → appConn.WriteMessage
+// writeChan 关闭或 ctx 取消时退出
+func (s *Session) writerGoroutine(writeChan <-chan wsMessage) {
+	for msg := range writeChan {
+		if err := s.appConn.WriteMessage(msg.messageType, msg.data); err != nil {
+			slog.Error("[FreeTalk] Write to app failed",
+				"error", err,
+				"conversation_id", s.conversationID,
+			)
+			s.cancel()
+			return
+		}
+	}
+}
+
+// ===================== ② appReaderGoroutine =====================
+
+// appReaderGoroutine 持续读取 App 发来的帧
+// Text Frame → 解析 IncomingMessage（start/stop 控制指令）
+// Binary Frame（PCM）→ 根据状态转发到 ASR 或丢弃
+func (s *Session) readerGoroutine(audioChan chan<- []byte) {
+	defer s.cancel()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		default:
+		}
+
+		messageType, data, err := s.appConn.ReadMessage()
+		if err != nil {
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				slog.Info("[FreeTalk] App disconnected normally",
+					"conversation_id", s.conversationID,
+				)
+				return
+			}
+			slog.Error("[FreeTalk] Read from app failed",
+				"error", err,
+				"conversation_id", s.conversationID,
+			)
+			return
+		}
+
+		switch messageType {
+		case websocket.TextMessage:
+			s.handleTextFrame(data)
+
+		case websocket.BinaryMessage:
+			audioChan <- data
+
+		default:
+			slog.Warn("[FreeTalk] Unexpected message type",
+				"type", messageType,
+				"conversation_id", s.conversationID,
+			)
+		}
+	}
+}
+
+// ===================== ③ asrGoroutine =====================
+func (s *Session) asrGoroutine(audioChan <-chan []byte, llmInputChan chan<- string, ttsNewTurnChan chan<- struct{}) {
+	s.asrProvider.ConnectASR(s.ctx, "pcm", 16000)
+	// 初始化 FunASR 连接，发 run-task（heart=true）
+
+	// 从 audioChan 取音频 → 发给 FunASR
+
+}
+
+func (s *Session) llmGoroutine(llmInputChan <-chan string, llmOutputChan chan<- llmChunk, writeChan chan<- wsMessage) {
+
+}
+
+func (s *Session) ttsGoroutine(llmOutputChan <-chan llmChunk, ttsNewTurnChan chan<- struct{}, writeChan chan<- wsMessage) {
+
+}
+
+// handleTextFrame 处理 App 发来的文本帧
+func (s *Session) handleTextFrame(data []byte) {
+	var msg IncomingMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		slog.Warn("[FreeTalk] Parse text frame failed",
+			"error", err,
+			"conversation_id", s.conversationID,
+		)
+		return
+	}
+
+	switch msg.Type {
+	case "stop":
+		slog.Info("[FreeTalk] Received stop command",
+			"conversation_id", s.conversationID,
+		)
+		s.cancel()
+
+	default:
+		slog.Warn("[FreeTalk] Unknown text frame type",
+			"type", msg.Type,
+			"conversation_id", s.conversationID,
+		)
+	}
+}
+
+// handleBinaryFrame 处理 App 发来的二进制帧（PCM 音频）
+func (s *Session) handleBinaryFrame(data []byte) {
+
+}
+
+type llmChunk struct {
+	Text   string
+	IsDone bool // true 表示本轮生成结束
 }

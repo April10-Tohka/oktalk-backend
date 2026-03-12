@@ -6,17 +6,29 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 
 	"pronunciation-correction-system/internal/domain"
 	"pronunciation-correction-system/internal/handler/middleware"
 	"pronunciation-correction-system/internal/pkg/logger"
 	"pronunciation-correction-system/internal/service"
 )
+
+// ===================== WebSocket Upgrader =====================
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  16 * 1024, // 16KB，适合 PCM 音频块
+	WriteBufferSize: 16 * 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		return true // 开发阶段允许所有来源，生产环境应限制
+	},
+}
 
 // ChatHandler AI 语音对话处理器
 type ChatHandler struct {
@@ -277,4 +289,80 @@ func (h *ChatHandler) SubmitChatFeedback(c *gin.Context) {
 	// 4. 成功：OK(c, gin.H{"message": "感谢您的反馈"})
 	// 5. 失败：InternalError(c, err.Error())
 	InternalError(c, "not implemented")
+}
+
+func (h *ChatHandler) HandleWebSocket(c *gin.Context) {
+	// 1. 获取认证信息（由 Auth 中间件注入）
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    401,
+			"message": "未认证",
+		})
+		return
+	}
+	userIDStr, ok := userID.(string)
+	if !ok || userIDStr == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    401,
+			"message": "用户信息无效",
+		})
+		return
+	}
+	// 2. 解析请求体获取conversation_id
+	type freetalkRequestBody struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	var reqBody freetalkRequestBody
+	if err := c.ShouldBindJSON(&reqBody); err != nil {
+		BadRequest(c, "invalid request body: "+err.Error())
+		return
+	}
+	conversationID := reqBody.ConversationID
+	if conversationID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "缺少 conversation_id 参数",
+		})
+		return
+	}
+	// 3. 验证 free talk 模式语音对话请求
+	err := h.chatService.ValidateFreetalk(c.Request.Context(), &service.ValidateFreetalkRequest{
+		ConversationID: conversationID,
+		UserID:         userIDStr,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "验证 free talk 模式语音对话请求失败",
+		})
+		return
+	}
+	// 4. 升级为 WebSocket
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		slog.Error("[FreeTalk] WebSocket upgrade failed",
+			"error", err,
+			"user_id", userIDStr,
+			"conversation_id", conversationID,
+		)
+	}
+
+	slog.Info("[FreeTalk] WebSocket connected",
+		"user_id", userIDStr,
+		"conversation_id", conversationID,
+	)
+
+	// 5. 处理websocket
+	h.chatService.HandleFreetalk(c.Request.Context(), &service.HandleFreetalkRequest{
+		Conn:           conn,
+		UserID:         userIDStr,
+		ConversationID: conversationID,
+	})
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":            200,
+		"message":         "free talk 模式语音对话已提交成功",
+		"conversation_id": conversationID,
+	})
 }
