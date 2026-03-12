@@ -1301,11 +1301,7 @@ func (s *Session) readerGoroutine(audioChan chan<- []byte) {
 
 // ===================== ③ asrGoroutine =====================
 func (s *Session) asrGoroutine(audioChan <-chan []byte, llmInputChan chan<- string, ttsNewTurnChan chan<- struct{}) {
-	s.asrProvider.ConnectASR(s.ctx, "pcm", 16000)
-	// 初始化 FunASR 连接，发 run-task（heart=true）
-
-	// 从 audioChan 取音频 → 发给 FunASR
-
+	s.asrProvider.ConnectASR(s.ctx, audioChan, llmInputChan, ttsNewTurnChan)
 }
 
 func (s *Session) llmGoroutine(llmInputChan <-chan string, llmOutputChan chan<- llmChunk, writeChan chan<- wsMessage) {

@@ -43,7 +43,7 @@ type ASRProvider interface {
 	//   - AudioSender: 用于持续发送实时音频数据的发送器
 	//   - <-chan *ASRStreamEvent: 流式事件通道，包含中间结果和最终结果（sentence_end=true 表示断句）
 	//   - error: 连接或初始化错误
-	ConnectASR(ctx context.Context, format string, sampleRate int) (AudioSender, <-chan *ASRStreamEvent, error)
+	ConnectASR(ctx context.Context, audioChan <-chan []byte, llmInputChan chan<- string, ttsNewTurnChan chan<- struct{}) error
 
 	// Close 关闭客户端，释放资源
 	Close() error

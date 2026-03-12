@@ -109,91 +109,91 @@ func (s *Session) getState() sessionState {
 //  3. asrReaderGoroutine：持续读取 ASR 事件
 //  4. ttsReaderGoroutine：持续读取 TTS 音频
 func (s *Session) Run(ctx context.Context) error {
-	s.ctx, s.cancel = context.WithCancel(ctx)
-	defer s.cancel()
+	// s.ctx, s.cancel = context.WithCancel(ctx)
+	// defer s.cancel()
 
-	// 1. 建立 ASR 长连接
-	asrFormat := s.cfg.ASRFormat
-	if asrFormat == "" {
-		asrFormat = "pcm"
-	}
-	asrSampleRate := s.cfg.ASRSampleRate
-	if asrSampleRate == 0 {
-		asrSampleRate = 16000
-	}
+	// // 1. 建立 ASR 长连接
+	// asrFormat := s.cfg.ASRFormat
+	// if asrFormat == "" {
+	// 	asrFormat = "pcm"
+	// }
+	// asrSampleRate := s.cfg.ASRSampleRate
+	// if asrSampleRate == 0 {
+	// 	asrSampleRate = 16000
+	// }
 
-	audioSender, asrEventCh, err := s.asrProvider.ConnectASR(s.ctx, asrFormat, asrSampleRate)
-	if err != nil {
-		return fmt.Errorf("connect ASR failed: %w", err)
-	}
-	s.audioSender = audioSender
-	defer func() {
-		if s.audioSender != nil {
-			_ = s.audioSender.Close()
-		}
-	}()
+	//  err := s.asrProvider.ConnectASR(s.ctx, asrFormat, asrSampleRate)
+	// if err != nil {
+	// 	return fmt.Errorf("connect ASR failed: %w", err)
+	// }
+	// s.audioSender = audioSender
+	// defer func() {
+	// 	if s.audioSender != nil {
+	// 		_ = s.audioSender.Close()
+	// 	}
+	// }()
 
-	// 2. 建立 TTS 长连接
-	ttsOpts := &domain.SynthesizeOptions{
-		Voice:      s.cfg.TTSVoice,
-		Format:     s.cfg.TTSFormat,
-		SampleRate: s.cfg.TTSSampleRate,
-	}
-	ttsStreamer, err := s.ttsProvider.ConnectTTS(s.ctx, ttsOpts)
-	if err != nil {
-		return fmt.Errorf("connect TTS failed: %w", err)
-	}
-	s.ttsStreamer = ttsStreamer
-	defer func() {
-		if s.ttsStreamer != nil {
-			_ = s.ttsStreamer.Close()
-		}
-	}()
+	// // 2. 建立 TTS 长连接
+	// ttsOpts := &domain.SynthesizeOptions{
+	// 	Voice:      s.cfg.TTSVoice,
+	// 	Format:     s.cfg.TTSFormat,
+	// 	SampleRate: s.cfg.TTSSampleRate,
+	// }
+	// ttsStreamer, err := s.ttsProvider.ConnectTTS(s.ctx, ttsOpts)
+	// if err != nil {
+	// 	return fmt.Errorf("connect TTS failed: %w", err)
+	// }
+	// s.ttsStreamer = ttsStreamer
+	// defer func() {
+	// 	if s.ttsStreamer != nil {
+	// 		_ = s.ttsStreamer.Close()
+	// 	}
+	// }()
 
-	// 3. WaitGroup 用于等待所有 goroutine 结束
-	var wg sync.WaitGroup
+	// // 3. WaitGroup 用于等待所有 goroutine 结束
+	// var wg sync.WaitGroup
 
-	// ① writerGoroutine（最先启动）
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		s.writerGoroutine()
-	}()
+	// // ① writerGoroutine（最先启动）
+	// wg.Add(1)
+	// go func() {
+	// 	defer wg.Done()
+	// 	s.writerGoroutine()
+	// }()
 
-	// ② appReaderGoroutine
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		s.appReaderGoroutine()
-	}()
+	// // ② appReaderGoroutine
+	// wg.Add(1)
+	// go func() {
+	// 	defer wg.Done()
+	// 	s.appReaderGoroutine()
+	// }()
 
-	// ③ asrReaderGoroutine
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		s.asrReaderGoroutine(asrEventCh)
-	}()
+	// // ③ asrReaderGoroutine
+	// wg.Add(1)
+	// go func() {
+	// 	defer wg.Done()
+	// 	s.asrReaderGoroutine(asrEventCh)
+	// }()
 
-	// ④ ttsReaderGoroutine
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		s.ttsReaderGoroutine()
-	}()
+	// // ④ ttsReaderGoroutine
+	// wg.Add(1)
+	// go func() {
+	// 	defer wg.Done()
+	// 	s.ttsReaderGoroutine()
+	// }()
 
-	// 阻塞等待 ctx 取消
-	<-s.ctx.Done()
+	// // 阻塞等待 ctx 取消
+	// <-s.ctx.Done()
 
-	// 关闭 writeChan 以终止 writerGoroutine
-	close(s.writeChan)
+	// // 关闭 writeChan 以终止 writerGoroutine
+	// close(s.writeChan)
 
-	// 等待所有 goroutine 退出
-	wg.Wait()
+	// // 等待所有 goroutine 退出
+	// wg.Wait()
 
-	slog.Info("[FreeTalk] Session ended",
-		"conversation_id", s.conversationID,
-		"user_id", s.userID,
-	)
+	// slog.Info("[FreeTalk] Session ended",
+	// 	"conversation_id", s.conversationID,
+	// 	"user_id", s.userID,
+	// )
 
 	return nil
 }

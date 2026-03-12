@@ -118,7 +118,7 @@ func (c *internalClient) recognizeStream(ctx context.Context, audioData []byte, 
 	handler := newEventHandler(taskID)
 
 	// 3. 发送 run-task 指令
-	if err := c.sendRunTask(ctx, conn, taskID, format, sampleRate); err != nil {
+	if err := c.sendRunTask(ctx, conn, taskID, WithFormat(format), WithSampleRate(sampleRate)); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to send run-task: %w", err)
 	}
@@ -167,8 +167,64 @@ func (c *internalClient) connectWebSocket(ctx context.Context) (*websocket.Conn,
 
 // ===================== 发送指令 =====================
 
+// RunTaskOption 定义运行任务的可选参数配置函数
+type RunTaskOption func(*wsParams)
+
+// WithFormat 设置音频格式 (默认: pcm)
+func WithFormat(format string) RunTaskOption {
+	return func(p *wsParams) { p.Format = format }
+}
+
+// WithSampleRate 设置音频采样率 (默认: 16000)
+func WithSampleRate(sampleRate int) RunTaskOption {
+	return func(p *wsParams) { p.SampleRate = sampleRate }
+}
+
+// WithVocabularyID 设置热词表ID
+func WithVocabularyID(vid string) RunTaskOption {
+	return func(p *wsParams) { p.VocabularyID = vid }
+}
+
+// WithSemanticPunctuationEnabled 设置是否开启语义断句
+func WithSemanticPunctuationEnabled(enabled bool) RunTaskOption {
+	return func(p *wsParams) { p.SemanticPunctuationEnabled = &enabled }
+}
+
+// WithMaxSentenceSilence 设置VAD静音时长阈值
+func WithMaxSentenceSilence(ms int) RunTaskOption {
+	return func(p *wsParams) { p.MaxSentenceSilence = &ms }
+}
+
+// WithMultiThresholdModeEnabled 设置防VAD断句过长
+func WithMultiThresholdModeEnabled(enabled bool) RunTaskOption {
+	return func(p *wsParams) { p.MultiThresholdModeEnabled = &enabled }
+}
+
+// WithHeartbeat 设置是否开启长连接保持
+func WithHeartbeat(enabled bool) RunTaskOption {
+	return func(p *wsParams) { p.Heartbeat = &enabled }
+}
+
+// WithLanguageHints 设置待识别语言代码
+func WithLanguageHints(hints []string) RunTaskOption {
+	return func(p *wsParams) { p.LanguageHints = hints }
+}
+
+// WithSpeechNoiseThreshold 设置语音与噪音的判定阈值
+func WithSpeechNoiseThreshold(threshold float64) RunTaskOption {
+	return func(p *wsParams) { p.SpeechNoiseThreshold = &threshold }
+}
+
 // sendRunTask 发送 run-task 指令，启动识别任务
-func (c *internalClient) sendRunTask(ctx context.Context, conn *websocket.Conn, taskID, format string, sampleRate int) error {
+func (c *internalClient) sendRunTask(ctx context.Context, conn *websocket.Conn, taskID string, opts ...RunTaskOption) error {
+	params := wsParams{
+		Format:     "pcm", // 默认格式
+		SampleRate: 16000, // 默认采样率
+	}
+	for _, opt := range opts {
+		opt(&params)
+	}
+
 	event := wsEvent{
 		Header: wsHeader{
 			Action:    actionRunTask,
@@ -176,15 +232,12 @@ func (c *internalClient) sendRunTask(ctx context.Context, conn *websocket.Conn, 
 			Streaming: streamingDuplex,
 		},
 		Payload: wsPayload{
-			TaskGroup: taskGroupAudio,
-			Task:      taskASR,
-			Function:  functionRecognize,
-			Model:     c.model,
-			Parameters: wsParams{
-				Format:     format,
-				SampleRate: sampleRate,
-			},
-			Input: wsInput{},
+			TaskGroup:  taskGroupAudio,
+			Task:       taskASR,
+			Function:   functionRecognize,
+			Model:      c.model,
+			Parameters: params,
+			Input:      wsInput{},
 		},
 	}
 
@@ -203,7 +256,7 @@ func (c *internalClient) sendRunTask(ctx context.Context, conn *websocket.Conn, 
 	}
 
 	logger.InfoContext(ctx, "[AliyunASR] Sent run-task: taskID=%s, model=%s, format=%s, sampleRate=%d",
-		taskID, c.model, format, sampleRate)
+		taskID, c.model, params.Format, params.SampleRate)
 	return nil
 }
 

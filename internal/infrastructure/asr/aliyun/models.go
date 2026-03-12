@@ -62,6 +62,24 @@ type wsParams struct {
 
 	// DisfluencyRemovalEnabled 是否启用语气词过滤
 	DisfluencyRemovalEnabled bool `json:"disfluency_removal_enabled,omitempty"`
+
+	// SemanticPunctuationEnabled 是否开启语义断句
+	SemanticPunctuationEnabled *bool `json:"semantic_punctuation_enabled,omitempty"`
+
+	// MaxSentenceSilence VAD静音时长阈值
+	MaxSentenceSilence *int `json:"max_sentence_silence,omitempty"`
+
+	// MultiThresholdModeEnabled 是否开启防止 VAD 断句过长的功能
+	MultiThresholdModeEnabled *bool `json:"multi_threshold_mode_enabled,omitempty"`
+
+	// Heartbeat 是否开启长连接保持开关
+	Heartbeat *bool `json:"heartbeat,omitempty"`
+
+	// LanguageHints 设置待识别语言代码
+	LanguageHints []string `json:"language_hints,omitempty"`
+
+	// SpeechNoiseThreshold 控制语音与噪音的判定阈值
+	SpeechNoiseThreshold *float64 `json:"speech_noise_threshold,omitempty"`
 }
 
 // wsInput 输入（run-task 和 finish-task 中使用，一般为空结构）
