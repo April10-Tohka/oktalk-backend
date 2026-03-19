@@ -14,6 +14,7 @@ import (
 	"pronunciation-correction-system/internal/config"
 
 	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/conversations"
 	"github.com/openai/openai-go/v3/option"
 )
 
@@ -167,4 +168,12 @@ func (c *internalClient) chat(ctx context.Context, req *chatRequest) (*chatRespo
 func (c *internalClient) close() error {
 	log.Println("[Qwen] Client closed")
 	return nil
+}
+
+func (c *internalClient) newConversation(ctx context.Context) (string, error) {
+	conv, err := c.client.Conversations.New(ctx, conversations.ConversationNewParams{})
+	if err != nil {
+		return "", err
+	}
+	return conv.ID, nil
 }

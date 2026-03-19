@@ -295,6 +295,7 @@ func (h *ChatHandler) HandleWebSocket(c *gin.Context) {
 	// 1. 获取认证信息（由 Auth 中间件注入）
 	userID, exists := c.Get("user_id")
 	if !exists {
+		slog.Error("[FreeTalk] user_id missing in context")
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"code":    401,
 			"message": "未认证",
@@ -303,29 +304,36 @@ func (h *ChatHandler) HandleWebSocket(c *gin.Context) {
 	}
 	userIDStr, ok := userID.(string)
 	if !ok || userIDStr == "" {
+		slog.Error("[FreeTalk] user_id invalid")
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"code":    401,
 			"message": "用户信息无效",
 		})
 		return
 	}
-	// 2. 解析请求体获取conversation_id
+	// 2. 解析query获取conversation_id
 	type freetalkRequestBody struct {
-		ConversationID string `json:"conversation_id"`
+		ConversationID string `form:"conversation_id" binding:"required"`
 	}
 	var reqBody freetalkRequestBody
-	if err := c.ShouldBindJSON(&reqBody); err != nil {
+	if err := c.ShouldBindQuery(&reqBody); err != nil {
+		slog.Error("[FreeTalk] bind query failed", "error", err)
 		BadRequest(c, "invalid request body: "+err.Error())
 		return
 	}
 	conversationID := reqBody.ConversationID
 	if conversationID == "" {
+		slog.Error("[FreeTalk] missing conversation_id")
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    400,
 			"message": "缺少 conversation_id 参数",
 		})
 		return
 	}
+	slog.Info("[FreeTalk] request",
+		"user_id", userIDStr,
+		"conversation_id", conversationID,
+	)
 	// 3. 验证 free talk 模式语音对话请求
 	err := h.chatService.ValidateFreetalk(c.Request.Context(), &service.ValidateFreetalkRequest{
 		ConversationID: conversationID,
@@ -346,6 +354,11 @@ func (h *ChatHandler) HandleWebSocket(c *gin.Context) {
 			"user_id", userIDStr,
 			"conversation_id", conversationID,
 		)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "WebSocket upgrade failed: " + err.Error(),
+		})
+		return
 	}
 
 	slog.Info("[FreeTalk] WebSocket connected",

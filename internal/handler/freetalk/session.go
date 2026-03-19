@@ -401,121 +401,121 @@ func (s *Session) ttsReaderGoroutine() {
 // handleTurn 处理一轮对话：LLM 流式生成 + TTS 流式合成
 // 由 asrReaderGoroutine 在检测到 sentence_end 时启动
 func (s *Session) handleTurn(userText string) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("[FreeTalk] handleTurn panic recovered",
-				"error", fmt.Sprintf("%v", r),
-				"conversation_id", s.conversationID,
-			)
-		}
-	}()
+	// defer func() {
+	// 	if r := recover(); r != nil {
+	// 		slog.Error("[FreeTalk] handleTurn panic recovered",
+	// 			"error", fmt.Sprintf("%v", r),
+	// 			"conversation_id", s.conversationID,
+	// 		)
+	// 	}
+	// }()
 
-	slog.Info("[FreeTalk] New turn started",
-		"user_text", userText,
-		"conversation_id", s.conversationID,
-	)
+	// slog.Info("[FreeTalk] New turn started",
+	// 	"user_text", userText,
+	// 	"conversation_id", s.conversationID,
+	// )
 
-	// 1. 启动 TTS 新任务
-	if err := s.ttsStreamer.RunTask(s.ctx); err != nil {
-		slog.Error("[FreeTalk] TTS RunTask failed",
-			"error", err,
-			"conversation_id", s.conversationID,
-		)
-		s.sendError("tts_error", "TTS 任务启动失败")
-		s.setState(stateIdle)
-		s.sendTextMessage(MsgTypeTurnEnd, "")
-		return
-	}
+	// // 1. 启动 TTS 新任务
+	// if err := s.ttsStreamer.RunTask(s.ctx); err != nil {
+	// 	slog.Error("[FreeTalk] TTS RunTask failed",
+	// 		"error", err,
+	// 		"conversation_id", s.conversationID,
+	// 	)
+	// 	s.sendError("tts_error", "TTS 任务启动失败")
+	// 	s.setState(stateIdle)
+	// 	s.sendTextMessage(MsgTypeTurnEnd, "")
+	// 	return
+	// }
 
-	// 2. 构建 LLM 消息历史
-	messages := s.buildLLMMessages(userText)
+	// // 2. 构建 LLM 消息历史
+	// messages := s.buildLLMMessages(userText)
 
-	// 3. 流式调用 LLM
-	var aiText strings.Builder
-	var accumulatedText strings.Builder
-	textFlushLen := s.cfg.TextFlushLen
-	if textFlushLen <= 0 {
-		textFlushLen = 20 // 默认积累 20 字符后推送 TTS
-	}
+	// // 3. 流式调用 LLM
+	// var aiText strings.Builder
+	// var accumulatedText strings.Builder
+	// textFlushLen := s.cfg.TextFlushLen
+	// if textFlushLen <= 0 {
+	// 	textFlushLen = 20 // 默认积累 20 字符后推送 TTS
+	// }
 
-	err := s.llmProvider.ChatStream(s.ctx, messages, func(token string) {
-		// 推送每个 token 给 App
-		s.sendTextMessage(MsgTypeLLMToken, token)
+	// err := s.llmProvider.ChatStream(s.ctx, messages, func(token string) {
+	// 	// 推送每个 token 给 App
+	// 	s.sendTextMessage(MsgTypeLLMToken, token)
 
-		aiText.WriteString(token)
-		accumulatedText.WriteString(token)
+	// 	aiText.WriteString(token)
+	// 	accumulatedText.WriteString(token)
 
-		// 积累足够文本后推送到 TTS
-		if accumulatedText.Len() >= textFlushLen {
-			if feedErr := s.ttsStreamer.FeedText(s.ctx, accumulatedText.String()); feedErr != nil {
-				slog.Error("[FreeTalk] TTS FeedText failed",
-					"error", feedErr,
-					"conversation_id", s.conversationID,
-				)
-			}
-			accumulatedText.Reset()
-		}
-	})
+	// 	// 积累足够文本后推送到 TTS
+	// 	if accumulatedText.Len() >= textFlushLen {
+	// 		if feedErr := s.ttsStreamer.FeedText(s.ctx, accumulatedText.String()); feedErr != nil {
+	// 			slog.Error("[FreeTalk] TTS FeedText failed",
+	// 				"error", feedErr,
+	// 				"conversation_id", s.conversationID,
+	// 			)
+	// 		}
+	// 		accumulatedText.Reset()
+	// 	}
+	// })
 
-	if err != nil {
-		slog.Error("[FreeTalk] LLM ChatStream failed",
-			"error", err,
-			"conversation_id", s.conversationID,
-		)
-		s.sendError("llm_error", "AI 回复生成失败")
-		// 仍然需要结束 TTS 任务
-		_ = s.ttsStreamer.FinishTask(s.ctx)
-		s.setState(stateIdle)
-		s.sendTextMessage(MsgTypeTurnEnd, "")
-		return
-	}
+	// if err != nil {
+	// 	slog.Error("[FreeTalk] LLM ChatStream failed",
+	// 		"error", err,
+	// 		"conversation_id", s.conversationID,
+	// 	)
+	// 	s.sendError("llm_error", "AI 回复生成失败")
+	// 	// 仍然需要结束 TTS 任务
+	// 	_ = s.ttsStreamer.FinishTask(s.ctx)
+	// 	s.setState(stateIdle)
+	// 	s.sendTextMessage(MsgTypeTurnEnd, "")
+	// 	return
+	// }
 
-	// 4. 推送剩余文本到 TTS
-	if accumulatedText.Len() > 0 {
-		if err := s.ttsStreamer.FeedText(s.ctx, accumulatedText.String()); err != nil {
-			slog.Error("[FreeTalk] TTS FeedText remaining failed",
-				"error", err,
-				"conversation_id", s.conversationID,
-			)
-		}
-	}
+	// // 4. 推送剩余文本到 TTS
+	// if accumulatedText.Len() > 0 {
+	// 	if err := s.ttsStreamer.FeedText(s.ctx, accumulatedText.String()); err != nil {
+	// 		slog.Error("[FreeTalk] TTS FeedText remaining failed",
+	// 			"error", err,
+	// 			"conversation_id", s.conversationID,
+	// 		)
+	// 	}
+	// }
 
-	// 5. 通知 TTS 文本发送完毕
-	if err := s.ttsStreamer.FinishTask(s.ctx); err != nil {
-		slog.Error("[FreeTalk] TTS FinishTask failed",
-			"error", err,
-			"conversation_id", s.conversationID,
-		)
-	}
+	// // 5. 通知 TTS 文本发送完毕
+	// if err := s.ttsStreamer.FinishTask(s.ctx); err != nil {
+	// 	slog.Error("[FreeTalk] TTS FinishTask failed",
+	// 		"error", err,
+	// 		"conversation_id", s.conversationID,
+	// 	)
+	// }
 
-	// 6. 等待 TTS 播放完成
-	select {
-	case <-s.ttsStreamer.TaskDone():
-		slog.Info("[FreeTalk] TTS task done",
-			"conversation_id", s.conversationID,
-		)
-	case <-s.ctx.Done():
-		return
-	case <-time.After(120 * time.Second):
-		slog.Warn("[FreeTalk] Wait TTS task done timeout",
-			"conversation_id", s.conversationID,
-		)
-	}
+	// // 6. 等待 TTS 播放完成
+	// select {
+	// case <-s.ttsStreamer.TaskDone():
+	// 	slog.Info("[FreeTalk] TTS task done",
+	// 		"conversation_id", s.conversationID,
+	// 	)
+	// case <-s.ctx.Done():
+	// 	return
+	// case <-time.After(120 * time.Second):
+	// 	slog.Warn("[FreeTalk] Wait TTS task done timeout",
+	// 		"conversation_id", s.conversationID,
+	// 	)
+	// }
 
-	// 7. 发送 turn_end 给 App
-	s.sendTextMessage(MsgTypeTurnEnd, "")
+	// // 7. 发送 turn_end 给 App
+	// s.sendTextMessage(MsgTypeTurnEnd, "")
 
-	// 8. 切换回 idle 状态
-	s.setState(stateIdle)
+	// // 8. 切换回 idle 状态
+	// s.setState(stateIdle)
 
-	// 9. 异步保存对话消息到数据库
-	go s.saveMessages(userText, aiText.String())
+	// // 9. 异步保存对话消息到数据库
+	// go s.saveMessages(userText, aiText.String())
 
-	slog.Info("[FreeTalk] Turn completed",
-		"user_text_len", len(userText),
-		"ai_text_len", aiText.Len(),
-		"conversation_id", s.conversationID,
-	)
+	// slog.Info("[FreeTalk] Turn completed",
+	// 	"user_text_len", len(userText),
+	// 	"ai_text_len", aiText.Len(),
+	// 	"conversation_id", s.conversationID,
+	// )
 }
 
 // ===================== 辅助方法 =====================

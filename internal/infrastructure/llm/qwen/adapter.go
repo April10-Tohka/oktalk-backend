@@ -80,3 +80,11 @@ func (a *QwenAdapter) ChatWithHistory(ctx context.Context, messages []domain.Cha
 func (a *QwenAdapter) Close() error {
 	return a.qwenClient.close()
 }
+
+func (a *QwenAdapter) NewConversation(ctx context.Context) (string, error) {
+	convID, err := a.qwenClient.newConversation(ctx)
+	if err != nil {
+		return "", fmt.Errorf("qwen new conversation failed: %w", err)
+	}
+	return convID, nil
+}

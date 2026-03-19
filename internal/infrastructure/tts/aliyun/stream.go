@@ -18,8 +18,12 @@ import (
 
 // ConnectTTS 建立流式 TTS 长连接（用于 Free Talk 模式）
 // 返回 TTSStreamer，支持多轮文本推送和音频接收
-func (a *AliyunTTSAdapter) ConnectTTS(ctx context.Context, options *domain.SynthesizeOptions) (domain.TTSStreamer, error) {
-	return a.client.connectTTS(ctx, options)
+func (a *AliyunTTSAdapter) ConnectTTS(ctx context.Context) (*websocket.Conn, error) {
+	conn, err := a.client.connectWebSocket(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("connect TTS websocket failed: %w", err)
+	}
+	return conn, nil
 }
 
 // connectTTS 内部实现
@@ -35,12 +39,12 @@ func (c *internalClient) connectTTS(ctx context.Context, options *domain.Synthes
 	streamCtx, streamCancel := context.WithCancel(ctx)
 
 	streamer := &ttsStreamerImpl{
-		conn:         conn,
-		model:        c.model,
-		params:       params,
-		audioCh:      make(chan []byte, 128),
-		ctx:          streamCtx,
-		cancel:       streamCancel,
+		conn:    conn,
+		model:   c.model,
+		params:  params,
+		audioCh: make(chan []byte, 128),
+		ctx:     streamCtx,
+		cancel:  streamCancel,
 	}
 
 	// 启动后台接收 goroutine

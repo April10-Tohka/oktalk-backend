@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"time"
 
 	"pronunciation-correction-system/internal/pkg/logger"
 
@@ -61,6 +62,8 @@ func (c *internalClient) connectASR(ctx context.Context, audioChan <-chan []byte
 
 	// 6. 启动并发 goroutine：接收结果
 	go func(ctx context.Context, conn *websocket.Conn, handler *eventHandler, llmInputChan chan<- string, ttsNewTurnChan chan<- struct{}) {
+		// 设置websocket读取超时时间
+		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		for {
 			select {
 			case <-ctx.Done():
@@ -89,6 +92,8 @@ func (c *internalClient) connectASR(ctx context.Context, audioChan <-chan []byte
 				logger.ErrorContext(ctx, "[AliyunASR] Read message failed ", "task_id", handler.taskID, "error", err)
 				return
 			}
+			// 重置websocket读取超时时间
+			conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 			// 解析事件
 			var event wsEvent
 			if err := json.Unmarshal(message, &event); err != nil {
@@ -117,7 +122,7 @@ func (c *internalClient) connectASR(ctx context.Context, audioChan <-chan []byte
 				return
 			default:
 				logger.WarnContext(ctx, "[AliyunASR] Unknown event", "event", event.Header.Event, "task_id", handler.taskID)
-				return
+				continue
 			}
 		}
 	}(ctx, conn, handler, llmInputChan, ttsNewTurnChan)

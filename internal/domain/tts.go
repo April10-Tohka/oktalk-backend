@@ -1,6 +1,10 @@
 package domain
 
-import "context"
+import (
+	"context"
+
+	"github.com/gorilla/websocket"
+)
 
 // ===================== TTS 语音合成接口 =====================
 
@@ -23,15 +27,7 @@ type TTSProvider interface {
 	SynthesizeMultiple(ctx context.Context, texts []string, options *SynthesizeOptions) ([]byte, error)
 
 	// ConnectTTS 建立流式 TTS 长连接（用于 Free Talk 模式）
-	// 返回 TTSStreamer，支持在同一连接上执行多个合成任务（每轮对话一个任务）。
-	// 使用流程：RunTask() → FeedText() * N → FinishTask() → 等待 TaskDone() → 再次 RunTask()...
-	// 参数:
-	//   - ctx: 上下文，控制整个连接的生命周期
-	//   - options: 合成选项（音色、格式、采样率等）
-	// 返回:
-	//   - TTSStreamer: 流式 TTS 操作接口
-	//   - error: 连接或初始化错误
-	ConnectTTS(ctx context.Context, options *SynthesizeOptions) (TTSStreamer, error)
+	ConnectTTS(ctx context.Context) (*websocket.Conn, error)
 
 	// Close 关闭客户端，释放资源
 	Close() error

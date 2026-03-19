@@ -1221,11 +1221,11 @@ func NewSession(
 }
 
 func (s *Session) Run() error {
-	audioChan := make(chan []byte, 1024)        // App音频 → ASR goroutine（转发PCM给ASR）
-	llmInputChan := make(chan string, 1024)     // ASR goroutine → LLM goroutine（触发LLM，携带识别文本）
-	llmOutputChan := make(chan llmChunk, 1024)  // LLM goroutine → TTS goroutine（流式token投喂TTS）
-	writeChan := make(chan wsMessage, 1024)     // 所有goroutine → Writer goroutine（统一写App WebSocket）
-	ttsNewTurnChan := make(chan struct{}, 1024) // ASR goroutine → TTS goroutine（触发新一轮TTS任务）
+	audioChan := make(chan []byte, 1024)              // App音频 → ASR goroutine（转发PCM给ASR）
+	llmInputChan := make(chan string, 1024)           // ASR goroutine → LLM goroutine（触发LLM，携带识别文本）
+	llmOutputChan := make(chan domain.LLMChunk, 1024) // LLM goroutine → TTS goroutine（流式token投喂TTS）
+	writeChan := make(chan wsMessage, 1024)           // 所有goroutine → Writer goroutine（统一写App WebSocket）
+	ttsNewTurnChan := make(chan struct{}, 1024)       // ASR goroutine → TTS goroutine（触发新一轮TTS任务）
 
 	go s.readerGoroutine(audioChan)
 	go s.writerGoroutine(writeChan)
@@ -1267,7 +1267,7 @@ func (s *Session) readerGoroutine(audioChan chan<- []byte) {
 			return
 		default:
 		}
-
+		slog.Info("准备readmessage")
 		messageType, data, err := s.appConn.ReadMessage()
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
@@ -1304,11 +1304,200 @@ func (s *Session) asrGoroutine(audioChan <-chan []byte, llmInputChan chan<- stri
 	s.asrProvider.ConnectASR(s.ctx, audioChan, llmInputChan, ttsNewTurnChan)
 }
 
-func (s *Session) llmGoroutine(llmInputChan <-chan string, llmOutputChan chan<- llmChunk, writeChan chan<- wsMessage) {
+func (s *Session) llmGoroutine(llmInputChan <-chan string, llmOutputChan chan<- domain.LLMChunk, writeChan chan<- wsMessage) {
+	// 创建新对话
+	convID, err := s.llmProvider.NewConversation(s.ctx)
+	if err != nil {
+		slog.Error("[FreeTalk] New conversation failed",
+			"error", err,
+			"conversation_id", s.conversationID,
+		)
+		return
+	}
+	// 启动一个goroutine，持续获取llmIntputChan中的数据，调用llmProvider.ChatStream，将结果写入llmOutputChan
+	go func() {
+		for input := range llmInputChan {
+			stream := s.llmProvider.ChatStream(s.ctx, convID, input)
+
+			// 处理流式响应
+			for stream.Next() {
+				event := stream.Current()
+				// 日志输出
+				slog.Info("[FreeTalk] LLM stream event",
+					"event.Delta", event.Delta,
+					"event", event,
+				)
+				llmOutputChan <- domain.LLMChunk{
+					Text:   event.Delta,
+					IsDone: false,
+				}
+				writeChan <- wsMessage{
+					messageType: websocket.TextMessage,
+					data:        []byte(event.Delta),
+				}
+			}
+			if stream.Err() != nil {
+				slog.Error("[FreeTalk] Chat stream failed",
+					"error", stream.Err(),
+				)
+				return
+			}
+
+		}
+	}()
 
 }
 
-func (s *Session) ttsGoroutine(llmOutputChan <-chan llmChunk, ttsNewTurnChan chan<- struct{}, writeChan chan<- wsMessage) {
+func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnChan <-chan struct{}, writeChan chan<- wsMessage) {
+	//  建立websocket连接。需要使用ttsProvider.ConnectTTS()方法。
+	ttsConn, err := s.ttsProvider.ConnectTTS(s.ctx)
+	if err != nil {
+		slog.Error("[FreeTalk] Connect TTS failed",
+			"error", err,
+			"conversation_id", s.conversationID,
+		)
+		return
+	}
+
+	// 启动一个goroutine，持续获取ttsNewTurnChan中的数据。
+	// 每当收到一个新事件，代表这是新的一轮tts合成音频的任务。需要发送run-task指令
+	go func() {
+		for range ttsNewTurnChan {
+			// 生成任务ID
+			taskID := uuid.New()
+
+			// 发送run-task指令
+			runTaskCmd := map[string]interface{}{
+				"header": map[string]interface{}{
+					"action":    "run-task",
+					"task_id":   taskID,
+					"streaming": "duplex",
+				},
+				"payload": map[string]interface{}{
+					"task_group": "audio",
+					"task":       "tts",
+					"function":   "SpeechSynthesizer",
+					"model":      "cosyvoice-v3-flash",
+					"parameters": map[string]interface{}{
+						"text_type":   "PlainText",
+						"voice":       "longanyang",
+						"format":      "mp3",
+						"sample_rate": 22050,
+						"volume":      50,
+						"rate":        1,
+						"pitch":       1,
+						// 如果enable_ssml设为true，只允许发送一次continue-task指令，否则会报错“Text request limit violated, expected 1.”
+						"enable_ssml": false,
+					},
+					"input": map[string]interface{}{},
+				},
+			}
+
+			runTaskJSON, _ := json.Marshal(runTaskCmd)
+			ttsConn.WriteMessage(websocket.TextMessage, runTaskJSON)
+			if err != nil {
+				slog.Error("[FreeTalk] Send run task failed",
+					"error", err,
+				)
+				return
+			}
+			// 创建一个通道，用于接收task-started事件
+			taskStartedChan := make(chan struct{}, 1)
+			// 启动一个goroutine异步接收WebSocket消息
+			go func() {
+				for {
+					messageType, message, err := ttsConn.ReadMessage()
+					if err != nil {
+						slog.Error("[FreeTalk] Read tts message failed",
+							"error", err,
+						)
+						return
+					}
+					if messageType == websocket.BinaryMessage {
+						writeChan <- wsMessage{
+							messageType: websocket.BinaryMessage,
+							data:        message,
+						}
+						continue
+					} else if messageType == websocket.TextMessage {
+						var event wsEvent
+						if err := json.Unmarshal(message, &event); err != nil {
+							slog.Error("[FreeTalk] Parse event failed",
+								"error", err,
+							)
+						}
+						if event.Header.Event == "task-started" {
+							taskStartedChan <- struct{}{}
+						} else if event.Header.Event == "task-failed" {
+							slog.Error("[FreeTalk] Task failed",
+								"error", event.Header.ErrorMessage,
+							)
+							return
+						} else if event.Header.Event == "task-finished" {
+							slog.Info("[FreeTalk] Task finished",
+								"task_id", event.Header.TaskID,
+							)
+							return
+						}
+					}
+				}
+			}()
+			// 启动一个goroutine，持续获取llmOutputChan中的数据。
+			go func() {
+				<-taskStartedChan
+				for chunk := range llmOutputChan {
+					// 发送continue-task指令
+					continueTaskCmd := map[string]interface{}{
+						"header": map[string]interface{}{
+							"action":    "continue-task",
+							"task_id":   taskID,
+							"streaming": "duplex",
+						},
+						"payload": map[string]interface{}{
+							"input": map[string]interface{}{
+								"text": chunk.Text,
+							},
+						},
+					}
+
+					continueTaskJSON, _ := json.Marshal(continueTaskCmd)
+					err = ttsConn.WriteMessage(websocket.TextMessage, continueTaskJSON)
+					if err != nil {
+						slog.Error("[FreeTalk] Send continue task failed",
+							"error", err,
+						)
+						return
+					}
+
+					if chunk.IsDone {
+						// 发送finish-task指令
+						finishTaskCmd := map[string]interface{}{
+							"header": map[string]interface{}{
+								"action":    "finish-task",
+								"task_id":   taskID,
+								"streaming": "duplex",
+							},
+							"payload": map[string]interface{}{
+								"input": map[string]interface{}{},
+							},
+						}
+
+						finishTaskJSON, _ := json.Marshal(finishTaskCmd)
+
+						err = ttsConn.WriteMessage(websocket.TextMessage, finishTaskJSON)
+						if err != nil {
+							slog.Error("[FreeTalk] Send finish task failed",
+								"error", err,
+							)
+							return
+						}
+						return
+					}
+				}
+
+			}()
+		}
+	}()
 
 }
 
@@ -1343,7 +1532,94 @@ func (s *Session) handleBinaryFrame(data []byte) {
 
 }
 
-type llmChunk struct {
-	Text   string
-	IsDone bool // true 表示本轮生成结束
+// wsEvent WebSocket 事件（请求和响应的统一结构）
+type wsEvent struct {
+	Header  wsHeader  `json:"header"`
+	Payload wsPayload `json:"payload"`
+}
+
+// wsHeader 事件头部
+type wsHeader struct {
+	// Action 请求动作: "run-task", "continue-task", "finish-task"
+	Action string `json:"action,omitempty"`
+
+	// TaskID 任务唯一标识
+	TaskID string `json:"task_id"`
+
+	// Streaming 流式模式: "duplex"（双工）
+	Streaming string `json:"streaming,omitempty"`
+
+	// Event 响应事件类型: "task-started", "result-generated", "task-finished", "task-failed"
+	Event string `json:"event,omitempty"`
+
+	// ErrorCode 错误码（仅 task-failed 时有值）
+	ErrorCode string `json:"error_code,omitempty"`
+
+	// ErrorMessage 错误信息（仅 task-failed 时有值）
+	ErrorMessage string `json:"error_message,omitempty"`
+
+	// Attributes 附加属性
+	Attributes map[string]interface{} `json:"attributes,omitempty"`
+}
+
+// wsPayload 事件负载
+type wsPayload struct {
+	// 请求字段
+	TaskGroup  string   `json:"task_group,omitempty"`
+	Task       string   `json:"task,omitempty"`
+	Function   string   `json:"function,omitempty"`
+	Model      string   `json:"model,omitempty"`
+	Parameters wsParams `json:"parameters,omitempty"`
+	Input      wsInput  `json:"input"`
+
+	// 响应字段
+	Output wsOutput `json:"output,omitempty"`
+	Usage  *wsUsage `json:"usage,omitempty"`
+}
+
+// wsParams TTS 合成参数
+type wsParams struct {
+	// TextType 文本类型: "PlainText"
+	TextType string `json:"text_type,omitempty"`
+
+	// Voice 音色: "longanyang", "longxiaochun" 等
+	Voice string `json:"voice,omitempty"`
+
+	// Format 音频格式: "mp3", "wav", "pcm"
+	Format string `json:"format,omitempty"`
+
+	// SampleRate 采样率: 8000, 16000, 22050, 24000, 48000
+	SampleRate int `json:"sample_rate,omitempty"`
+
+	// Volume 音量: 0-100
+	Volume int `json:"volume,omitempty"`
+
+	// Rate 语速: 0.5-2.0
+	Rate float64 `json:"rate,omitempty"`
+
+	// Pitch 音调: 0.5-2.0
+	Pitch float64 `json:"pitch,omitempty"`
+
+	// EnableSSML 是否启用 SSML（启用后只允许发送一次 continue-task）
+	EnableSSML bool `json:"enable_ssml,omitempty"`
+}
+
+// wsInput 输入内容
+type wsInput struct {
+	// Text 待合成文本（用于 continue-task 指令）
+	Text string `json:"text,omitempty"`
+}
+
+// wsOutput 输出内容（用于 result-generated 事件）
+type wsOutput struct {
+	// 部分 TTS 事件可能在此返回额外信息
+}
+
+// wsUsage 计费信息
+type wsUsage struct {
+	// Characters 已消耗字符数
+	Characters int `json:"characters,omitempty"`
+
+	// Duration 音频时长（秒）
+	Duration int `json:"duration,omitempty"`
 }

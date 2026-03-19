@@ -2,7 +2,12 @@
 // 所有接口方法只使用 Go 原生类型，严禁出现任何第三方 SDK 结构体
 package domain
 
-import "context"
+import (
+	"context"
+
+	"github.com/openai/openai-go/v3/packages/ssestream"
+	"github.com/openai/openai-go/v3/responses"
+)
 
 // LLMProvider 大语言模型服务提供者接口
 // 用于生成发音反馈文本、对话等 AI 功能
@@ -14,10 +19,13 @@ type LLMProvider interface {
 	ChatWithHistory(ctx context.Context, messages []ChatMessage) (string, error)
 
 	// ChatStream 流式多轮对话（用于 Free Talk 模式）
-	// 给定完整的对话历史，流式回调每个生成的 token。
-	// onToken: 每生成一个 token 回调一次，传入增量文本片段
-	// 方法阻塞直到生成完成或出错
-	ChatStream(ctx context.Context, messages []ChatMessage, onToken func(token string)) error
+	// 传入ConversationID，用于关联对话历史
+	// 传入要发送的消息，用于生成新的token
+	// 方法返回stream，由调用方来读取stream中的token，并写入llmOutputChan
+	ChatStream(ctx context.Context, conversationID string, message string) *ssestream.Stream[responses.ResponseStreamEventUnion]
+
+	// NewConversation 创建新对话
+	NewConversation(ctx context.Context) (string, error)
 
 	// Close 关闭客户端，释放资源
 	Close() error
@@ -27,4 +35,9 @@ type LLMProvider interface {
 type ChatMessage struct {
 	Role    string // "system", "user", "assistant"
 	Content string
+}
+
+type LLMChunk struct {
+	Text   string
+	IsDone bool // true 表示本轮生成结束
 }

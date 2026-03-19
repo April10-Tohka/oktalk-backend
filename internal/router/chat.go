@@ -29,11 +29,11 @@ func setupChatRoutes(rg *gin.RouterGroup, h *handler.ChatHandler) {
 		chat.POST("/feedback", h.SubmitChatFeedback)
 
 		// free talk 模式的语音对话
-		chat.POST("/freetalk", h.HandleWebSocket)
+		chat.GET("/freetalk", h.HandleWebSocket)
 	}
 }
 
 // setupFreeTalkRoutes 注册 Free Talk WebSocket 路由（需认证）
 func setupFreeTalkRoutes(rg *gin.RouterGroup, h *freetalk.Handler) {
-	rg.GET("/chat/freetalk", h.HandleWebSocket)
+	rg.POST("/chat/freetalk", h.HandleWebSocket)
 }
