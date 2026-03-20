@@ -248,10 +248,6 @@ func (s *chatServiceImpl) StartSession(ctx context.Context, req *StartSessionReq
 	if conversationType == "" {
 		conversationType = "free_talk"
 	}
-	difficultyLevel := strings.TrimSpace(req.DifficultyLevel)
-	if difficultyLevel == "" {
-		difficultyLevel = "beginner"
-	}
 	topic := strings.TrimSpace(req.Topic)
 	if topic == "" {
 		topic = "General"
@@ -262,7 +258,6 @@ func (s *chatServiceImpl) StartSession(ctx context.Context, req *StartSessionReq
 		ID:               conversationID,
 		UserID:           req.UserID,
 		Topic:            topic,
-		DifficultyLevel:  difficultyLevel,
 		ConversationType: conversationType,
 		MessageCount:     0,
 		DurationSeconds:  0,
@@ -276,7 +271,6 @@ func (s *chatServiceImpl) StartSession(ctx context.Context, req *StartSessionReq
 	return &StartSessionResponse{
 		ConversationID:   conversationID,
 		ConversationType: conversationType,
-		DifficultyLevel:  difficultyLevel,
 		Topic:            topic,
 		Status:           "active",
 	}, nil

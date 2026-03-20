@@ -111,10 +111,11 @@ func (h *ChatHandler) ChatMVP(c *gin.Context) {
 	c.Data(http.StatusOK, "audio/mpeg", audioReply)
 }
 
+// StartSession POST /api/v1/chat/start-session
+// 创建新的对话会话
 func (h *ChatHandler) StartSession(c *gin.Context) {
 	var reqBody struct {
 		ConversationType string `json:"conversation_type"`
-		DifficultyLevel  string `json:"difficulty_level"`
 		Topic            string `json:"topic"`
 	}
 	if err := c.ShouldBindJSON(&reqBody); err != nil && err != io.EOF {
@@ -130,7 +131,6 @@ func (h *ChatHandler) StartSession(c *gin.Context) {
 
 	result, err := h.chatService.StartSession(c.Request.Context(), &service.StartSessionRequest{
 		ConversationType: reqBody.ConversationType,
-		DifficultyLevel:  reqBody.DifficultyLevel,
 		Topic:            reqBody.Topic,
 		UserID:           userID.(string),
 	})
