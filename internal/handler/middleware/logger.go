@@ -41,6 +41,7 @@ func LoggerMiddleware() gin.HandlerFunc {
 		clientIP := c.ClientIP()
 		userAgent := c.Request.UserAgent()
 
+		fmt.Println()
 		// 记录请求开始
 		slog.InfoContext(ctx, "request started",
 			"method", method,
