@@ -51,6 +51,7 @@ func Setup(cfg *config.Config, handlers *handler.Handlers, rdb *redis.Client) *g
 			setupReportRoutes(authed, handlers.Report)         // 智能学习报告
 			setupUserRoutes(authed, handlers.User)             // 用户信息
 			setupResourceRoutes(authed, handlers.System)       // 学习资源
+			setupSceneRoutes(authed, handlers.Scene)           // 场景引导对话
 		}
 	}
 

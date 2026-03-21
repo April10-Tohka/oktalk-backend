@@ -1,0 +1,38 @@
+{
+  "id": "greeting",
+  "title": "Greeting",
+  "description": "Learn how to say hello and goodbye",
+  "cover_emoji": "👋",
+  "steps": [
+    {
+      "id": 1,
+      "question": "What do you say in the morning?",
+      "question_audio_text": "What do you say in the morning?",
+      "expected": ["good morning"],
+      "hints": ["Good morning", "Morning"],
+      "teach": "In the morning, we say: Good morning!"
+    },
+    {
+      "id": 2,
+      "question": "What do you say in the evening?",
+      "question_audio_text": "What do you say in the evening?",
+      "expected": ["good evening"],
+      "hints": ["Good evening"],
+      "teach": "In the evening, we say: Good evening!"
+    },
+    {
+      "id": 3,
+      "question": "How do you say goodbye?",
+      "question_audio_text": "How do you say goodbye?",
+      "expected": ["goodbye", "bye"],
+      "hints": ["Goodbye", "Bye bye"],
+      "teach": "When leaving, we say: Goodbye!"
+    }
+  ],
+  "summary_intro": "Great job! 🎉 Today we learned:",
+  "summary_items": [
+    "Good morning ☀️",
+    "Good evening 🌙",
+    "Goodbye 👋"
+  ]
+}

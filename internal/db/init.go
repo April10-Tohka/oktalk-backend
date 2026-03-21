@@ -110,6 +110,9 @@ func Migrate(db *gorm.DB) error {
 		&model.LearningReport{},
 		// 系统配置
 		&model.SystemSetting{},
+		// 场景引导
+		&model.SceneSession{},
+		&model.SceneMessage{},
 	)
 }
 

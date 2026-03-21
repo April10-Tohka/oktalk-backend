@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"path/filepath"
 
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -17,6 +18,7 @@ import (
 	"pronunciation-correction-system/internal/domain"
 	"pronunciation-correction-system/internal/handler"
 	"pronunciation-correction-system/internal/handler/freetalk"
+	"pronunciation-correction-system/internal/repository"
 	infraASR "pronunciation-correction-system/internal/infrastructure/asr/aliyun"
 	infraXF "pronunciation-correction-system/internal/infrastructure/evalution/xf"
 	infraLLM "pronunciation-correction-system/internal/infrastructure/llm/qwen"
@@ -50,6 +52,9 @@ type App struct {
 
 	// 数据库仓库
 	Repos *db.Repositories
+
+	// 场景引导（JSON 配置，启动时加载）
+	SceneLoader *config.SceneLoader
 
 	// 外部服务适配器（通过 domain 接口引用）
 	ASRProvider        domain.ASRProvider
@@ -92,6 +97,9 @@ func New(cfg *config.Config) (*App, error) {
 	}
 
 	app.initInfrastructure()
+	if err := app.initSceneLoader(); err != nil {
+		return nil, fmt.Errorf("init scene loader: %w", err)
+	}
 	app.initRepositories()
 	app.initServices()
 	app.initHandlers()
@@ -194,6 +202,18 @@ func (a *App) initInfrastructure() {
 	pkgjwt.Init(&a.Config.JWT)
 
 	log.Println("[App] Infrastructure adapters initialized")
+}
+
+// initSceneLoader 加载 configs/scenes 下 JSON 场景
+func (a *App) initSceneLoader() error {
+	dir := filepath.Join("configs", "scenes")
+	loader, err := config.NewSceneLoader(dir)
+	if err != nil {
+		return err
+	}
+	a.SceneLoader = loader
+	log.Println("[App] Scene configs loaded from", dir)
+	return nil
 }
 
 // initRepositories 初始化数据库仓库
@@ -301,6 +321,20 @@ func (a *App) initServices() {
 
 // initHandlers 初始化 HTTP Handler
 func (a *App) initHandlers() {
+	appLogger := slog.Default()
+	sceneSessionRepo := repository.NewSceneSessionRepository(a.DB)
+	sceneMessageRepo := repository.NewSceneMessageRepository(a.DB)
+	sceneSvc := service.NewSceneService(
+		a.SceneLoader,
+		sceneSessionRepo,
+		sceneMessageRepo,
+		a.ASRProvider,
+		a.LLMProvider,
+		a.TTSProvider,
+		a.OSSProvider,
+		appLogger,
+	)
+
 	a.Handlers = &handler.Handlers{
 		Auth:     handler.NewAuthHandler(a.AuthService),
 		User:     handler.NewUserHandler(a.UserService),
@@ -315,6 +349,7 @@ func (a *App) initHandlers() {
 			a.Repos,
 			&a.Config.FreeTalk,
 		),
+		Scene: handler.NewSceneHandler(sceneSvc),
 	}
 	log.Println("[App] Handlers initialized")
 }
