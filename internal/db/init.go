@@ -113,6 +113,9 @@ func Migrate(db *gorm.DB) error {
 		// 场景引导
 		&model.SceneSession{},
 		&model.SceneMessage{},
+		// 发音纠正 v2
+		&model.PronunciationSession{},
+		&model.PronunciationRecord{},
 	)
 }
 

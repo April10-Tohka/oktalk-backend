@@ -1,0 +1,24 @@
+{
+  "id": "sentence_daily_talk",
+  "type": "sentence",
+  "topic": "daily_talk",
+  "title": "Daily Talk",
+  "cover_emoji": "☀️",
+  "items": [
+    {
+      "id": 1,
+      "content": "What is your name?",
+      "standard_audio_url": "https://oss.example.com/pronunciation/standard/what_is_your_name.mp3"
+    },
+    {
+      "id": 2,
+      "content": "How old are you?",
+      "standard_audio_url": "https://oss.example.com/pronunciation/standard/how_old_are_you.mp3"
+    },
+    {
+      "id": 3,
+      "content": "I like English very much!",
+      "standard_audio_url": "https://oss.example.com/pronunciation/standard/i_like_english.mp3"
+    }
+  ]
+}

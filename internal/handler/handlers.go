@@ -13,5 +13,6 @@ type Handlers struct {
 	Report   *ReportHandler
 	System   *SystemHandler
 	FreeTalk *freetalk.Handler
-	Scene    *SceneHandler
+	Scene         *SceneHandler
+	Pronunciation *PronunciationHandler
 }

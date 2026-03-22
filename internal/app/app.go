@@ -56,6 +56,9 @@ type App struct {
 	// 场景引导（JSON 配置，启动时加载）
 	SceneLoader *config.SceneLoader
 
+	// 发音纠正 v2（JSON 配置，启动时加载）
+	PronunciationLoader *config.PronunciationLoader
+
 	// 外部服务适配器（通过 domain 接口引用）
 	ASRProvider        domain.ASRProvider
 	EvaluationProvider domain.EvaluationProvider
@@ -99,6 +102,9 @@ func New(cfg *config.Config) (*App, error) {
 	app.initInfrastructure()
 	if err := app.initSceneLoader(); err != nil {
 		return nil, fmt.Errorf("init scene loader: %w", err)
+	}
+	if err := app.initPronunciationLoader(); err != nil {
+		return nil, fmt.Errorf("init pronunciation loader: %w", err)
 	}
 	app.initRepositories()
 	app.initServices()
@@ -213,6 +219,18 @@ func (a *App) initSceneLoader() error {
 	}
 	a.SceneLoader = loader
 	log.Println("[App] Scene configs loaded from", dir)
+	return nil
+}
+
+// initPronunciationLoader 加载 configs/pronunciation 下 JSON
+func (a *App) initPronunciationLoader() error {
+	dir := filepath.Join("configs", "pronunciation")
+	loader, err := config.NewPronunciationLoader(dir)
+	if err != nil {
+		return err
+	}
+	a.PronunciationLoader = loader
+	log.Println("[App] Pronunciation unit configs loaded from", dir)
 	return nil
 }
 
@@ -335,6 +353,19 @@ func (a *App) initHandlers() {
 		appLogger,
 	)
 
+	pronSessionRepo := repository.NewPronunciationSessionRepository(a.DB)
+	pronRecordRepo := repository.NewPronunciationRecordRepository(a.DB)
+	pronSvc := service.NewPronunciationService(
+		a.PronunciationLoader,
+		pronSessionRepo,
+		pronRecordRepo,
+		a.EvaluationProvider,
+		a.LLMProvider,
+		a.TTSProvider,
+		a.OSSProvider,
+		appLogger,
+	)
+
 	a.Handlers = &handler.Handlers{
 		Auth:     handler.NewAuthHandler(a.AuthService),
 		User:     handler.NewUserHandler(a.UserService),
@@ -349,7 +380,8 @@ func (a *App) initHandlers() {
 			a.Repos,
 			&a.Config.FreeTalk,
 		),
-		Scene: handler.NewSceneHandler(sceneSvc),
+		Scene:         handler.NewSceneHandler(sceneSvc),
+		Pronunciation: handler.NewPronunciationHandler(pronSvc),
 	}
 	log.Println("[App] Handlers initialized")
 }

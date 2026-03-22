@@ -1,0 +1,24 @@
+{
+  "id": "word_food",
+  "type": "word",
+  "topic": "food",
+  "title": "Food Words",
+  "cover_emoji": "🍗",
+  "items": [
+    {
+      "id": 1,
+      "content": "pork",
+      "standard_audio_url": "https://oss.example.com/pronunciation/standard/pork.mp3"
+    },
+    {
+      "id": 2,
+      "content": "chicken",
+      "standard_audio_url": "https://oss.example.com/pronunciation/standard/chicken.mp3"
+    },
+    {
+      "id": 3,
+      "content": "beef",
+      "standard_audio_url": "https://oss.example.com/pronunciation/standard/beef.mp3"
+    }
+  ]
+}
