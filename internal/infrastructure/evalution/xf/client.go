@@ -104,7 +104,16 @@ func (c *internalClient) speechAssess(ctx context.Context, req *speechAssessRequ
 // sendSSBFrame 发送参数上传帧（第一阶段）
 func (c *internalClient) sendSSBFrame(ctx context.Context, conn *websocket.Conn, req *speechAssessRequest) error {
 	// 文本需要加 UTF-8 BOM 头
-	text := "\uFEFF" + req.Text
+	text := "\uFEFF"
+	// 针对不同的category，text需要做不同的处理
+	switch req.Category {
+	case "read_sentence":
+		text = "\uFEFF" + "[content]\n" + req.Text
+	case "read_word":
+		text = "\uFEFF" + "[word]\n" + req.Text
+	case "read_chapter":
+		text = "\uFEFF" + "[content]\n" + req.Text
+	}
 
 	frame := webSocketFrame{
 		Common: &commonParams{
