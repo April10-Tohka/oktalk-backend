@@ -19,7 +19,11 @@ type PronunciationRecord struct {
 	AIProblemTip string    `gorm:"type:text"                         json:"ai_problem_tip"`
 	AISuggestion string    `gorm:"type:text"                         json:"ai_suggestion"`
 	AIAudioURL   string    `gorm:"type:varchar(500)"                 json:"ai_audio_url"`
-	CreatedAt    time.Time `gorm:"autoCreateTime"                    json:"created_at"`
+	// 科大讯飞细分评测指标（0.0-5.0），对应 domain.EvaluationResult
+	Fluency    float32 `gorm:"type:decimal(3,1);default:0" json:"fluency"`      // FluencyScore
+	Integrity  float32 `gorm:"type:decimal(3,1);default:0" json:"integrity"`   // IntegrityScore
+	PhoneScore float32 `gorm:"type:decimal(3,1);default:0" json:"phone_score"` // StandardScore（标准度/音素相关）
+	CreatedAt  time.Time `gorm:"autoCreateTime"                    json:"created_at"`
 }
 
 // TableName 表名

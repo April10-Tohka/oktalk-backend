@@ -17,7 +17,7 @@ type LearningReport struct {
 	// ID 报告 ID (UUID)
 	ID string `gorm:"primaryKey;type:varchar(36)" json:"id" validate:"required,uuid"`
 	// UserID 用户 ID，外键
-	UserID string `gorm:"index;type:varchar(36);not null" json:"user_id" validate:"required,uuid"`
+	UserID string `gorm:"index;index:idx_lr_user_latest,priority:1;type:varchar(36);not null" json:"user_id" validate:"required,uuid"`
 	// ReportType 报告类型：weekly/monthly/custom
 	ReportType string `gorm:"index;type:enum('weekly','monthly','custom');default:'weekly';not null" json:"report_type" validate:"required,oneof=weekly monthly custom"`
 	// PeriodStartDate 统计周期起始日期
@@ -28,6 +28,11 @@ type LearningReport struct {
 	// TaskID 对应的异步任务ID，幂等返回时直接返回此字段供客户端轮询
 	// 可为空（历史数据兼容）
 	TaskID string `gorm:"type:varchar(100);default:''" json:"task_id"`
+
+	// Content 完整报告 JSON（异步 Worker 生成后写入）
+	Content string `gorm:"type:longtext" json:"content"`
+	// IsLatest 是否为该统计周期内的最新一条（同周期旧报告会置为 false）
+	IsLatest bool `gorm:"type:boolean;not null;default:true;index:idx_lr_user_latest,priority:2" json:"is_latest"` // composite (user_id,is_latest)
 
 	// === 统计数据 ===
 	// TotalConversations 总对话数

@@ -310,6 +310,9 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 		AIProblemTip: llmOut.ProblemTip,
 		AISuggestion: llmOut.Suggestion,
 		AIAudioURL:   aiAudioURL,
+		Fluency:      float32(evalResult.FluencyScore),
+		Integrity:    float32(evalResult.IntegrityScore),
+		PhoneScore:   float32(evalResult.StandardScore),
 	}
 	go func(r *model.PronunciationRecord) {
 		ctx2, cancel := context.WithTimeout(context.Background(), 30*time.Second)

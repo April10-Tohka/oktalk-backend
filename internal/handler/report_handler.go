@@ -4,6 +4,7 @@ package handler
 import (
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -152,13 +153,48 @@ func (h *ReportHandler) GetReport(c *gin.Context) {
 // GetReportList GET /api/v1/report/list
 // 获取用户报告列表
 func (h *ReportHandler) GetReportList(c *gin.Context) {
-	// TODO: Step2 实现
-	// 1. 解析查询参数: report_type, date_from, date_to, page(默认1), page_size(默认10), order_by, order
-	// 2. 从 Context 获取 user_id
-	// 3. 调用 h.reportService.GetReportList(ctx, userID, page, pageSize)
-	// 4. 成功：OKPage(c, items, page, pageSize, total)
-	// 5. 失败：InternalError(c, err.Error())
-	InternalError(c, "not implemented")
+	userID, exists := c.Get(string(middleware.UserIDKey))
+	if !exists {
+		Unauthorized(c)
+		return
+	}
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "0"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "0"))
+	items, _, err := h.reportService.GetReportList(c.Request.Context(), userID.(string), page, pageSize)
+	if err != nil {
+		InternalError(c, err.Error())
+		return
+	}
+	OK(c, gin.H{"reports": items})
+}
+
+// GetReportDetail GET /api/v1/report/:report_id
+// 从数据库 content 返回完整周报 JSON
+func (h *ReportHandler) GetReportDetail(c *gin.Context) {
+	reportID := c.Param("report_id")
+	if reportID == "" {
+		BadRequest(c, "report_id is required")
+		return
+	}
+	userID, exists := c.Get(string(middleware.UserIDKey))
+	if !exists {
+		Unauthorized(c)
+		return
+	}
+	detail, err := h.reportService.GetReportDetail(c.Request.Context(), reportID, userID.(string))
+	if err != nil {
+		if errors.Is(err, service.ErrReportNotFound) {
+			NotFound(c, "report not found")
+			return
+		}
+		if errors.Is(err, service.ErrReportAccessDenied) {
+			Forbidden(c)
+			return
+		}
+		InternalError(c, err.Error())
+		return
+	}
+	OK(c, detail)
 }
 
 // DeleteReport DELETE /api/v1/report/:report_id

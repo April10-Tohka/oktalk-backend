@@ -278,7 +278,7 @@ func (a *App) initServices() {
 	evalPersister := service.NewEvalResultPersister(appLogger)
 
 	reportProcessor := service.NewReportTaskProcessor(
-		a.Repos, a.LLMProvider, a.TTSProvider, a.OSSProvider,
+		a.Repos, a.PronunciationLoader, a.LLMProvider, a.TTSProvider, a.OSSProvider,
 		a.TaskCache, appLogger,
 	)
 	reportPersister := service.NewReportResultPersister(appLogger)
