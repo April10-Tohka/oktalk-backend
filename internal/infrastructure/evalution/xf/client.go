@@ -9,7 +9,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/xml"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -85,20 +84,14 @@ func (c *internalClient) speechAssess(ctx context.Context, req *speechAssessRequ
 	logger.DebugContext(ctx, "xf ise: all frames sent, waiting for result")
 
 	// 4. 接收评测结果
-	resultXML, sid, err := c.receiveResult(ctx, conn)
+	resultXML, _, err := c.receiveResult(ctx, conn)
 	if err != nil {
 		return nil, fmt.Errorf("receive result: %w", err)
 	}
 
 	logger.DebugContext(ctx, "xf ise: received result", "xml_length", len(resultXML))
 
-	// 5. 解析 XML 评测结果
-	result, err := parseXMLResult(resultXML, sid)
-	if err != nil {
-		return nil, fmt.Errorf("parse xml result: %w", err)
-	}
-
-	return result, nil
+	return nil, nil
 }
 
 // sendSSBFrame 发送参数上传帧（第一阶段）
@@ -282,94 +275,6 @@ func (c *internalClient) receiveResult(ctx context.Context, conn *websocket.Conn
 			return xmlBytes, Sid, nil
 		}
 	}
-}
-
-// parseXMLResult 解析 XML 评测结果为内部结构
-func parseXMLResult(xmlBytes []byte, sid string) (*speechAssessResult, error) {
-	var result xmlResult
-	if err := xml.Unmarshal(xmlBytes, &result); err != nil {
-		return nil, fmt.Errorf("xml unmarshal: %w", err)
-	}
-	logger.Info("xf ise: xml result parsed", "xml_result", result)
-	// 根据题型取对应的 block
-	var block *xmlReadBlock
-	switch {
-	case result.ReadSentence != nil:
-		block = result.ReadSentence
-	case result.ReadWord != nil:
-		block = result.ReadWord
-	case result.ReadChapter != nil:
-		block = result.ReadChapter
-	default:
-		return nil, fmt.Errorf("no matching read block found in xml result")
-	}
-	logger.Info("查看block", "block", *block)
-	if block.RecPaper == nil {
-		return nil, fmt.Errorf("rec_paper is nil")
-	}
-	logger.Info("查看block.RecPaper", "block.RecPaper", *block.RecPaper)
-	// 取对应题型的评测项
-	var item *xmlReadItem
-	switch {
-	case block.RecPaper.ReadSentence != nil:
-		item = block.RecPaper.ReadSentence
-	case block.RecPaper.ReadWord != nil:
-		item = block.RecPaper.ReadWord
-	case block.RecPaper.ReadChapter != nil:
-		item = block.RecPaper.ReadChapter
-	default:
-		return nil, fmt.Errorf("no matching read item in rec_paper")
-	}
-	logger.Info("查看item", "item", *item)
-	assessResult := &speechAssessResult{
-		Sid:            sid,
-		RawXML:         string(xmlBytes),
-		TotalScore:     parseFloat(item.TotalScore),
-		AccuracyScore:  parseFloat(item.AccuracyScore),
-		FluencyScore:   parseFloat(item.FluencyScore),
-		IntegrityScore: parseFloat(item.IntegrityScore),
-		StandardScore:  parseFloat(item.StandardScore),
-		IsRejected:     item.IsRejected == "true",
-		ExceptInfo:     item.ExceptInfo,
-	}
-
-	// 解析单词级结果
-	for _, sentence := range item.Sentences {
-		for _, word := range sentence.Words {
-			// if word.Content is sil/silv (静音), or fil(噪音) skip it
-			if word.Content == "sil" || word.Content == "silv" || word.Content == "fil" {
-				continue
-			}
-			w := wordResult{
-				Word:      word.Content,
-				Score:     parseFloat(word.TotalScore),
-				BeginTime: parseInt(word.BegPos),
-				EndTime:   parseInt(word.EndPos),
-				DpMessage: parseInt(word.DpMessage),
-			}
-
-			// TODO: 解析Phone音素层，告诉用户具体哪里发音不对
-			// // 解析音素级结果（从音节下提取音素）
-			// for _, syll := range word.Sylls {
-			// 	for _, phone := range syll.Phones {
-			// 		// 跳过 sil/fil 等非语音音素
-			// 		if phone.Content == "sil" || phone.Content == "fil" {
-			// 			continue
-			// 		}
-			// 		p := phonemeResult{
-			// 			Phoneme:   phone.Content,
-			// 			BeginTime: parseInt(phone.BegPos),
-			// 			EndTime:   parseInt(phone.EndPos),
-			// 		}
-			// 		w.Phonemes = append(w.Phonemes, p)
-			// 	}
-			// }
-
-			assessResult.Words = append(assessResult.Words, w)
-		}
-	}
-
-	return assessResult, nil
 }
 
 // buildAuthURL 构建带认证的 WebSocket URL

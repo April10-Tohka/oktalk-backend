@@ -919,7 +919,6 @@ func (p *EvalTaskProcessor) Process(ctx context.Context, task *worker.Task) (int
 		// update evaluation record
 		evaluation, err := p.repos.PronunciationEvaluation.GetByID(ctx, evalID)
 		if err == nil && evaluation != nil {
-			evaluation.AssessmentSID = &evalResult.Sid
 			evaluation.SpeechAssessmentJSON = &evalResult.RawXML
 			evaluation.OverallScore = int(score)
 			evaluation.AccuracyScore = int(evalResult.AccuracyScore)
@@ -957,7 +956,6 @@ func (p *EvalTaskProcessor) Process(ctx context.Context, task *worker.Task) (int
 				ProblemWords:         problemWords,
 				DifficultyLevel:      payload.DifficultyLevel,
 				Status:               "completed",
-				AssessmentSID:        &evalResult.Sid,
 				SpeechAssessmentJSON: &evalResult.RawXML,
 			}
 			if demoSentenceAudioURL != "" {

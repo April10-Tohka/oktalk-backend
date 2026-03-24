@@ -156,36 +156,63 @@ type speechAssessRequest struct {
 	Language  string // en_vip / cn_vip
 }
 
-// speechAssessResult 语音评测结果 (从 XML 解析后的中间结构)
+// speechAssessResult 语音评测结果 (从 XML 解析后的结构)
 type speechAssessResult struct {
-	Sid            string  // 语音评测会话 ID
-	RawXML         string  // 原始 XML 结果
-	TotalScore     float64 // 总分
-	AccuracyScore  float64 // 准确度评分
-	FluencyScore   float64 // 流畅度评分
-	IntegrityScore float64 // 完整度评分
-	StandardScore  float64 // 标准度评分
-	IsRejected     bool    // 是否被拒绝
-	ExceptInfo     string  // 异常信息  28673无语音或音量小类型 28676乱说类型 28689没有音频输入，请检测音频或录音设备是否正常
-	Words          []wordResult
+	RawXML         string           // 原始 XML 结果 (可选，用于调试)
+	TotalScore     float64          // 总分
+	AccuracyScore  float64          // 准确度评分
+	FluencyScore   float64          // 流畅度评分
+	IntegrityScore float64          // 完整度评分
+	StandardScore  float64          // 标准度评分
+	IsRejected     bool             // 是否被拒绝
+	ExceptInfo     int              // 异常信息代码 (0=正常, 28673=无语音/音量小, 28676=乱说, 28689=无音频输入)
+	BegPos         int              // 音频起始位置 (ms)
+	EndPos         int              // 音频结束位置 (ms)
+	Content        string           // 评测文本内容
+	WordCount      int              // 单词数量
+	Sentences      []sentenceResult // 句子详情
 }
 
-// wordResult 单词评测结果
+// sentenceResult 句子级评测结果
+type sentenceResult struct {
+	AccuracyScore float64      // 准确度评分
+	StandardScore float64      // 标准度评分
+	FluencyScore  float64      // 流畅度评分
+	TotalScore    float64      // 总分
+	BegPos        int          // 起始位置 (ms)
+	EndPos        int          // 结束位置 (ms)
+	Content       string       // 句子内容
+	WordCount     int          // 单词数量
+	Words         []wordResult // 单词详情
+}
+
+// wordResult 单词级评测结果
 type wordResult struct {
-	Word      string
-	Score     float64
-	BeginTime int
-	EndTime   int
-	DpMessage int // 0正常 16漏读 32增读
-	Phonemes  []phonemeResult
+	Content    string       // 单词内容 (如 "hello" 或 "sil" 表示静音)
+	BegPos     int          // 起始位置 (ms)
+	EndPos     int          // 结束位置 (ms)
+	DpMessage  int          // 发音诊断信息 (0=正常)
+	TotalScore float64      // 单词得分 (sil 为 0)
+	WerrMsg    string       // 错误信息
+	Sylls      []syllResult // 音节详情
 }
 
-// phonemeResult 音素评测结果
-type phonemeResult struct {
-	Phoneme   string
-	Score     float64
-	BeginTime int
-	EndTime   int
+// syllResult 音节级评测结果
+type syllResult struct {
+	Content    string        // 音节内容 (如 "hh eh", "l ow")
+	BegPos     int           // 起始位置 (ms)
+	EndPos     int           // 结束位置 (ms)
+	SerrMsg    int           // 音节错误码 (0=正常)
+	SyllAccent int           // 重音标记 (0=无重音, 1=有重音)
+	Phones     []phoneResult // 音素详情
+}
+
+// phoneResult 音素级评测结果
+type phoneResult struct {
+	Content   string // 音素内容 (如 "hh", "eh", "l", "ow")
+	BegPos    int    // 起始位置 (ms)
+	EndPos    int    // 结束位置 (ms)
+	DpMessage int    // 发音诊断 (0=正常)
 }
 
 // assessmentCategory 评测类型常量
