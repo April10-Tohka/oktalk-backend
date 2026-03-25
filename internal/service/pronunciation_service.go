@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -252,7 +253,12 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 		practiceType = "word"
 	}
 
-	evalResult, err := s.evalProvider.Assess(ctx, item.Content, req.AudioData, category)
+	audioData, err := extractWavPCM(req.AudioData)
+	if err != nil {
+		s.logger.Warn("pronunciation v2 extract wav pcm failed", slog.String("error", err.Error()))
+	}
+
+	evalResult, err := s.evalProvider.Assess(ctx, item.Content, audioData, category)
 	if err != nil {
 		s.logger.Error("pronunciation v2 assess failed", slog.String("error", err.Error()))
 		return nil, errHTTP(500, "评测服务异常")
@@ -350,6 +356,24 @@ func xunfeiCategory(unitType string) string {
 	default:
 		return "read_word"
 	}
+}
+
+// extractWavPCM WAV 转 PCM
+func extractWavPCM(data []byte) ([]byte, error) {
+	offset := 12
+	for offset+8 <= len(data) {
+		chunkID := string(data[offset : offset+4])
+		chunkSize := int(binary.LittleEndian.Uint32(data[offset+4 : offset+8]))
+		offset += 8
+		if offset+chunkSize > len(data) {
+			return nil, fmt.Errorf("invalid wav chunk size")
+		}
+		if chunkID == "data" {
+			return data[offset : offset+chunkSize], nil
+		}
+		offset += chunkSize
+	}
+	return nil, fmt.Errorf("wav data chunk not found")
 }
 
 // collectProblemWords 依据 domain.WordEvaluationResult.DpMessage：非 0 表示增漏读等问题
