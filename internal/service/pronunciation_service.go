@@ -185,7 +185,7 @@ type PronunciationEvaluateRequest struct {
 
 // EvaluationBlock 评测结果块
 type EvaluationBlock struct {
-	RawScore     float32  `json:"raw_score"`
+	TotalScore   float64  `json:"total_score"`
 	Stars        int      `json:"stars"`
 	ProblemWords []string `json:"problem_words"`
 }
@@ -264,13 +264,15 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 		return nil, errHTTP(500, "评测服务异常")
 	}
 
-	rawScore := float32(evalResult.TotalScore)
-	rawScore = clampFloat32(rawScore, 0, 5)
-	stars := int(math.Round(float64(rawScore)))
+	totalScore := evalResult.TotalScore
+	totalScore = clampFloat64(totalScore, 0, 5)
+	stars := int(math.Round(totalScore))
 	stars = clampInt(stars, 0, 5)
 
+	// 收集问题单词
 	problemWords := collectProblemWords(evalResult.Words)
 
+	// 上传用户音频
 	userAudioURL := ""
 	key := fmt.Sprintf("pronunciation/%s/%d_%s.wav", req.SessionID, req.ItemID, uuid.New())
 	if url, upErr := s.ossProvider.UploadAudio(ctx, key, req.AudioData); upErr != nil {
@@ -279,8 +281,10 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 		userAudioURL = url
 	}
 
-	llmOut := s.buildFeedbackLLM(ctx, item.Content, practiceType, rawScore, stars, problemWords)
+	// 生成 AI 反馈
+	llmOut := s.buildFeedbackLLM(ctx, item.Content, practiceType, totalScore, stars, problemWords)
 
+	// 生成 AI 音频
 	ttsText := strings.TrimSpace(llmOut.Encourage + " " + llmOut.ProblemTip + " " + llmOut.Suggestion)
 	aiAudioURL := ""
 	if ttsText != "" {
@@ -301,24 +305,28 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 
 	pwJSON, _ := json.Marshal(problemWords)
 	rec := &model.PronunciationRecord{
-		ID:           uuid.New(),
-		SessionID:    req.SessionID,
-		UserID:       req.UserID,
-		UnitID:       sess.UnitID,
-		ItemID:       req.ItemID,
-		Content:      item.Content,
-		PracticeType: practiceType,
-		RawScore:     rawScore,
-		Stars:        stars,
-		ProblemWords: string(pwJSON),
-		UserAudioURL: userAudioURL,
-		AIEncourage:  llmOut.Encourage,
-		AIProblemTip: llmOut.ProblemTip,
-		AISuggestion: llmOut.Suggestion,
-		AIAudioURL:   aiAudioURL,
-		Fluency:      float32(evalResult.FluencyScore),
-		Integrity:    float32(evalResult.IntegrityScore),
-		PhoneScore:   float32(evalResult.StandardScore),
+		ID:             uuid.New(),
+		SessionID:      req.SessionID,
+		UserID:         req.UserID,
+		UnitID:         sess.UnitID,
+		ItemID:         req.ItemID,
+		Content:        item.Content,
+		PracticeType:   practiceType,
+		TotalScore:     totalScore,
+		Stars:          stars,
+		ProblemWords:   string(pwJSON),
+		UserAudioURL:   userAudioURL,
+		AIEncourage:    llmOut.Encourage,
+		AIProblemTip:   llmOut.ProblemTip,
+		AISuggestion:   llmOut.Suggestion,
+		AIAudioURL:     aiAudioURL,
+		FluencyScore:   evalResult.FluencyScore,
+		IntegrityScore: evalResult.IntegrityScore,
+		StandardScore:  evalResult.StandardScore,
+		AccuracyScore:  evalResult.AccuracyScore,
+		ExceptInfo:     evalResult.ExceptInfo,
+		IsRejected:     evalResult.IsRejected,
+		RawXML:         evalResult.RawXML,
 	}
 	go func(r *model.PronunciationRecord) {
 		ctx2, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -328,14 +336,14 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 		}
 	}(rec)
 
-	recommend := rawScore >= 3.75
+	recommend := totalScore >= 3.75
 
 	return &PronunciationEvaluateResponse{
 		SessionID: req.SessionID,
 		ItemID:    req.ItemID,
 		Content:   item.Content,
 		Evaluation: EvaluationBlock{
-			RawScore:     rawScore,
+			TotalScore:   totalScore,
 			Stars:        stars,
 			ProblemWords: problemWords,
 		},
@@ -375,7 +383,7 @@ type llmFeedbackJSON struct {
 	Suggestion string `json:"suggestion"`
 }
 
-func (s *PronunciationService) buildFeedbackLLM(ctx context.Context, content, practiceType string, rawScore float32, stars int, problemWords []string) llmFeedbackJSON {
+func (s *PronunciationService) buildFeedbackLLM(ctx context.Context, content, practiceType string, rawScore float64, stars int, problemWords []string) llmFeedbackJSON {
 	sys := `你是一位儿童英语发音老师，说话简短活泼，多用 emoji，语气鼓励正向。
 只能返回 JSON，不允许返回任何其他内容。`
 	usr := fmt.Sprintf(`小朋友正在练习英语发音。
@@ -416,7 +424,7 @@ func fallbackFeedback(stars int) llmFeedbackJSON {
 	}
 }
 
-func clampFloat32(v, min, max float32) float32 {
+func clampFloat64(v, min, max float64) float64 {
 	if v < min {
 		return min
 	}
@@ -514,14 +522,14 @@ func (s *PronunciationService) Advance(ctx context.Context, req *PronunciationAd
 // summaryItemRow 总结中单条
 type summaryItemRow struct {
 	Content   string  `json:"content"`
-	BestScore float32 `json:"best_score"`
+	BestScore float64 `json:"best_score"`
 	BestStars int     `json:"best_stars"`
 }
 
 // PronunciationSummaryResponse 单元总结
 type PronunciationSummaryResponse struct {
 	UnitTitle    string           `json:"unit_title"`
-	AverageScore float32          `json:"average_score"`
+	AverageScore float64          `json:"average_score"`
 	AverageStars int              `json:"average_stars"`
 	Items        []summaryItemRow `json:"items"`
 	SummaryLLM   string           `json:"summary"`
@@ -559,19 +567,19 @@ func (s *PronunciationService) GetSummary(ctx context.Context, userID, sessionID
 	var sum float64
 	for _, it := range unit.Items {
 		sc := bestMap[it.ID]
-		st := int(math.Round(float64(sc)))
+		st := int(math.Round(sc))
 		st = clampInt(st, 0, 5)
 		items = append(items, summaryItemRow{
 			Content:   it.Content,
 			BestScore: sc,
 			BestStars: st,
 		})
-		sum += float64(sc)
+		sum += sc
 	}
 	n := len(unit.Items)
-	avg := float32(0)
+	avg := float64(0)
 	if n > 0 {
-		avg = float32(sum / float64(n))
+		avg = sum / float64(n)
 	}
 	avgStars := int(math.Round(float64(avg)))
 	avgStars = clampInt(avgStars, 0, 5)

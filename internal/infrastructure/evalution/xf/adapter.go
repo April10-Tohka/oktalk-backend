@@ -12,7 +12,6 @@ import (
 	"pronunciation-correction-system/internal/config"
 	"pronunciation-correction-system/internal/domain"
 	"pronunciation-correction-system/internal/pkg/logger"
-	"strconv"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -92,13 +91,6 @@ func (a *XFEvaluationAdapter) Assess(ctx context.Context, text string, audioData
 	return a.convertToResult(resultXML, result), nil
 }
 
-func exceptInfoString(code int) string {
-	if code == 0 {
-		return ""
-	}
-	return strconv.Itoa(code)
-}
-
 // Close 关闭客户端
 func (a *XFEvaluationAdapter) Close() error {
 	return nil
@@ -115,7 +107,7 @@ func (a *XFEvaluationAdapter) convertToResult(xmlBytes []byte, sdk *speechAssess
 		Words:          flattenWordsForDomain(sdk),
 		RawXML:         string(xmlBytes),
 		IsRejected:     sdk.IsRejected,
-		ExceptInfo:     exceptInfoString(sdk.ExceptInfo),
+		ExceptInfo:     sdk.ExceptInfo,
 	}
 }
 

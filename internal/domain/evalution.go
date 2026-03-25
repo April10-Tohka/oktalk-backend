@@ -20,7 +20,7 @@ type EvaluationProvider interface {
 type EvaluationResult struct {
 	RawXML         string                 `json:"raw_xml"`         // 原始结果（如 XML），便于排错与审计
 	IsRejected     bool                   `json:"is_rejected"`     // 是否被拒绝
-	ExceptInfo     string                 `json:"except_info"`     // 异常/拒识说明（厂商编码由 Adapter 透传为可读信息亦可）
+	ExceptInfo     int                    `json:"except_info"`     // 异常/拒识说明（厂商编码由 Adapter 透传为可读信息亦可）
 	TotalScore     float64                `json:"total_score"`     // 综合评分（如 0～5）
 	AccuracyScore  float64                `json:"accuracy_score"`  // 准确度
 	FluencyScore   float64                `json:"fluency_score"`   // 流利度
