@@ -381,9 +381,9 @@ func (r *learningReportRepository) GetRadarScores(ctx context.Context, userID st
 	}
 	err = r.db.WithContext(ctx).Raw(`
 		SELECT
-			COALESCE(AVG(raw_score), 0) AS avg_raw,
-			COALESCE(AVG(fluency), 0) AS avg_fluency,
-			COALESCE(AVG(integrity), 0) AS avg_integrity
+			COALESCE(AVG(total_score), 0) AS avg_raw,
+			COALESCE(AVG(fluency_score), 0) AS avg_fluency,
+			COALESCE(AVG(integrity_score), 0) AS avg_integrity
 		FROM pronunciation_records
 		WHERE user_id = ? AND created_at >= ? AND created_at <= ?`,
 		userID, start, end).Scan(&row).Error
