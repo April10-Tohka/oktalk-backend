@@ -19,12 +19,12 @@ type PronunciationRecord struct {
 	AIProblemTip   string    `gorm:"type:text"                         json:"ai_problem_tip"`
 	AISuggestion   string    `gorm:"type:text"                         json:"ai_suggestion"`
 	AIAudioURL     string    `gorm:"type:varchar(500)"                 json:"ai_audio_url"`
-	AccuracyScore  float64   `gorm:"type:decimal(4,2);default:0 comment:'准确度评分'" json:"accuracy_score"`
-	FluencyScore   float64   `gorm:"type:decimal(4,2);default:0 comment:'流利度评分'" json:"fluency_score"`
-	IntegrityScore float64   `gorm:"type:decimal(4,2);default:0 comment:'完整度评分'" json:"integrity_score"`
-	StandardScore  float64   `gorm:"type:decimal(4,2);default:0 comment:'标准度评分'" json:"standard_score"`
-	ExceptInfo     int       `gorm:"type:int;default:0 comment:'异常信息'" json:"except_info"`
-	IsRejected     bool      `gorm:"type:tinyint(1);default:0 comment:'是否被拒绝'" json:"is_rejected"`
+	AccuracyScore  float64   `gorm:"type:decimal(4,2);default:0; comment:'准确度评分'" json:"accuracy_score"`
+	FluencyScore   float64   `gorm:"type:decimal(4,2);default:0; comment:'流利度评分'" json:"fluency_score"`
+	IntegrityScore float64   `gorm:"type:decimal(4,2);default:0; comment:'完整度评分'" json:"integrity_score"`
+	StandardScore  float64   `gorm:"type:decimal(4,2);default:0; comment:'标准度评分'" json:"standard_score"`
+	ExceptInfo     int       `gorm:"type:int;default:0; comment:'异常信息'" json:"except_info"`
+	IsRejected     bool      `gorm:"type:tinyint(1);default:0; comment:'是否被拒绝'" json:"is_rejected"`
 	RawXML         string    `gorm:"type:longtext"                         json:"raw_xml"`
 	CreatedAt      time.Time `gorm:"autoCreateTime"                    json:"created_at"`
 }
