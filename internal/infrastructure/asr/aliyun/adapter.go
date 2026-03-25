@@ -183,7 +183,7 @@ func (a *AliyunASRAdapter) startResultReceiver(ctx context.Context, conn *websoc
 func (a *AliyunASRAdapter) sendRunTask(ctx context.Context, conn *websocket.Conn, taskID string) error {
 	heartbeat := true
 	params := wsParams{
-		Format:     "pcm", // 默认格式
+		Format:     "wav", // 默认格式
 		SampleRate: 16000, // 默认采样率
 		Heartbeat:  &heartbeat,
 	}
