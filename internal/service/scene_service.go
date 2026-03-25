@@ -11,6 +11,7 @@ import (
 	"pronunciation-correction-system/internal/config"
 	"pronunciation-correction-system/internal/domain"
 	"pronunciation-correction-system/internal/model"
+	"pronunciation-correction-system/internal/pkg/logger"
 	"pronunciation-correction-system/internal/pkg/uuid"
 	"pronunciation-correction-system/internal/repository"
 )
@@ -270,6 +271,7 @@ func (s *SceneService) SubmitAnswer(ctx context.Context, req *SubmitAnswerReques
 	if userText == "" {
 		return nil, errHTTP(400, "音频为空，请重新录音")
 	}
+	logger.InfoContext(ctx, "scene user text", "user_text", userText)
 
 	userAudioKey := fmt.Sprintf("scene/%s/user_%s.wav", req.SessionID, uuid.New())
 	go func(data []byte, key string) {
@@ -307,12 +309,12 @@ func (s *SceneService) SubmitAnswer(ctx context.Context, req *SubmitAnswerReques
 	aiAudioURL := ""
 	if reply.Reply != "" {
 		opts := domain.DefaultSynthesizeOptions()
-		opts.Format = "mp3"
+		opts.Format = "wav"
 		audio, err := s.ttsProvider.Synthesize(ctx, reply.Reply, opts)
 		if err != nil {
 			s.logger.Warn("scene TTS reply failed", slog.String("error", err.Error()))
 		} else {
-			key := fmt.Sprintf("scene/%s/ai_%s.mp3", req.SessionID, uuid.New())
+			key := fmt.Sprintf("scene/%s/ai_%s.wav", req.SessionID, uuid.New())
 			url, upErr := s.ossProvider.UploadAudio(ctx, key, audio)
 			if upErr != nil {
 				s.logger.Warn("scene OSS ai audio failed", slog.String("error", upErr.Error()))
