@@ -1,6 +1,7 @@
 package aliyun
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -295,7 +296,7 @@ func (a *AliyunTTSAdapter) startResultReceiver(ctx context.Context, conn *websoc
 	go func() {
 		defer close(resultCh)
 		defer close(errCh)
-		audioBuffer := make([]byte, 1024)
+		var audioBuffer bytes.Buffer
 		for {
 			select {
 			case <-ctx.Done():
@@ -315,10 +316,10 @@ func (a *AliyunTTSAdapter) startResultReceiver(ctx context.Context, conn *websoc
 			}
 			// 处理二进制消息（音频数据块）
 			if messageType == websocket.BinaryMessage {
-				audioBuffer = append(audioBuffer, message...)
-
+				audioBuffer.Write(message)
 				logger.InfoContext(ctx, "[AliyunTTS] Received audio chunk",
 					"bytes", len(message),
+					"total", audioBuffer.Len(),
 					"task_id", taskID,
 				)
 				continue
@@ -347,7 +348,7 @@ func (a *AliyunTTSAdapter) startResultReceiver(ctx context.Context, conn *websoc
 						"task_id", taskID,
 					)
 				}
-				resultCh <- audioBuffer
+				resultCh <- audioBuffer.Bytes()
 				return
 
 			case eventTaskFailed:
