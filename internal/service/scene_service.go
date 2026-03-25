@@ -114,11 +114,11 @@ func (s *SceneService) StartSession(ctx context.Context, req *SceneStartSessionR
 	}
 
 	var (
-		sess          *model.SceneSession
-		isResumed     bool
-		currentStep   int
-		step          *config.SceneStep
-		sessionID     string
+		sess        *model.SceneSession
+		isResumed   bool
+		currentStep int
+		step        *config.SceneStep
+		sessionID   string
 	)
 
 	existing, err := s.sessionRepo.FindActiveByUserAndScene(ctx, req.UserID, req.SceneID)
@@ -191,23 +191,23 @@ func (s *SceneService) synthQuestionAudio(ctx context.Context, sessionID, text s
 
 // SubmitAnswerRequest 提交回答
 type SubmitAnswerRequest struct {
-	UserID     string
-	SessionID  string
-	StepID     int
-	AudioData  []byte
-	AudioType  string // wav / mp3 / pcm
+	UserID    string
+	SessionID string
+	StepID    int
+	AudioData []byte
+	AudioType string // wav / mp3 / pcm
 }
 
 // SubmitAnswerResponse 提交回答响应
 type SubmitAnswerResponse struct {
-	UserText            string `json:"user_text"`
-	MatchResult         string `json:"match_result"`
-	AIReplyText         string `json:"ai_reply_text"`
-	AIAudioURL          string `json:"ai_audio_url"`
-	ShouldAdvance       bool   `json:"step_advanced"`
-	SceneCompleted      bool   `json:"scene_completed"`
-	CurrentStep         int    `json:"current_step"`
-	NextQuestion        string `json:"next_question,omitempty"`
+	UserText             string `json:"user_text"`
+	MatchResult          string `json:"match_result"`
+	AIReplyText          string `json:"ai_reply_text"`
+	AIAudioURL           string `json:"ai_audio_url"`
+	ShouldAdvance        bool   `json:"step_advanced"`
+	SceneCompleted       bool   `json:"scene_completed"`
+	CurrentStep          int    `json:"current_step"`
+	NextQuestion         string `json:"next_question,omitempty"`
 	NextQuestionAudioURL string `json:"next_question_audio_url,omitempty"`
 }
 
@@ -261,12 +261,12 @@ func (s *SceneService) SubmitAnswer(ctx context.Context, req *SubmitAnswerReques
 	}
 	attempt := prevCount + 1
 
-	asrResult, err := s.asrProvider.RecognizeAudio(ctx, req.AudioData, audioType, 16000)
+	asrResult, err := s.asrProvider.RecognizeAudio(ctx, req.AudioData)
 	if err != nil {
 		s.logger.Error("scene ASR failed", slog.String("error", err.Error()))
 		return nil, errHTTP(500, "语音识别失败")
 	}
-	userText := strings.TrimSpace(asrResult.Text)
+	userText := strings.TrimSpace(asrResult)
 	if userText == "" {
 		return nil, errHTTP(400, "音频为空，请重新录音")
 	}
@@ -600,4 +600,3 @@ func (s *SceneService) GetHistory(ctx context.Context, userID, sessionID string)
 	}
 	return &GetHistoryResponse{Messages: list}, nil
 }
-

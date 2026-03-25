@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"pronunciation-correction-system/internal/config"
 	"pronunciation-correction-system/internal/domain"
 	"pronunciation-correction-system/internal/pkg/logger"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
@@ -49,46 +51,48 @@ func NewAliyunASRAdapter(cfg config.AliyunASRConfig) *AliyunASRAdapter {
 
 // RecognizeAudio 同步识别音频数据
 // 发送完整音频，等待识别完成后返回汇总结果
-func (a *AliyunASRAdapter) RecognizeAudio(ctx context.Context, audioData []byte, format string, sampleRate int) (*domain.ASRResult, error) {
-	return a.client.recognizeAudio(ctx, audioData, format, sampleRate)
-	// // 连接WebSocket服务
-	// conn, err := a.connectWebSocket(ctx)
-	// if err != nil {
-	// 	return nil, err
-	// }
-	// defer conn.Close()
-	// // 生成任务ID
-	// taskID := uuid.New().String()
-	// // 发送run-task指令
-	// err = a.sendRunTask(ctx, conn, taskID)
-	// if err != nil {
-	// 	return nil, fmt.Errorf("send run-task failed: %w", err)
-	// }
-	// // 等待task-started事件
-	// err = a.waitTaskStarted(ctx, conn, taskID)
-	// if err != nil {
-	// 	return nil, fmt.Errorf("wait task-started failed: %w", err)
-	// }
-	// errCh := make(chan error, 1)
-	// resultCh := make(chan string, 1)
-	// // 启动结果接收器
-	// a.startResultReceiver(ctx, conn, taskID, resultCh, errCh)
-	// // 发送待识别的音频流
-	// a.sendAudio(ctx, conn, taskID, audioData)
-	// // 发送finish-task指令
-	// err = a.sendFinishTask(ctx, conn, taskID)
-	// if err != nil {
-	// 	return nil, fmt.Errorf("send finish-task failed: %w", err)
-	// }
-	// // 等待识别任务完成或失败
-	// select {
-	// case <-ctx.Done():
-	// 	return nil, fmt.Errorf("recognize audio canceled: %w", ctx.Err())
-	// case text := <-resultCh:
-	// 	return text, nil
-	// case err := <-errCh:
-	// 	return nil, fmt.Errorf("recognize audio failed: %w", err)
-	// }
+func (a *AliyunASRAdapter) RecognizeAudio(ctx context.Context, audioData []byte) (string, error) {
+	// 连接WebSocket服务
+	conn, err := a.connectWebSocket(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	// 生成任务ID
+	taskID := uuid.New().String()
+	// 发送run-task指令
+	err = a.sendRunTask(ctx, conn, taskID)
+	if err != nil {
+		return "", fmt.Errorf("send run-task failed: %w", err)
+	}
+	// 等待task-started事件
+	err = a.waitTaskStarted(ctx, conn, taskID)
+	if err != nil {
+		return "", fmt.Errorf("wait task-started failed: %w", err)
+	}
+	errCh := make(chan error, 1)
+	resultCh := make(chan string, 1)
+	// 启动结果接收器
+	a.startResultReceiver(ctx, conn, resultCh, errCh)
+	// 发送待识别的音频流
+	err = a.sendAudioData(ctx, conn, audioData)
+	if err != nil {
+		return "", fmt.Errorf("send audio data failed: %w", err)
+	}
+	// 发送finish-task指令
+	err = a.sendFinishTask(ctx, conn, taskID)
+	if err != nil {
+		return "", fmt.Errorf("send finish-task failed: %w", err)
+	}
+	// 等待识别任务完成或失败
+	select {
+	case <-ctx.Done():
+		return "", fmt.Errorf("recognize audio canceled: %w", ctx.Err())
+	case text := <-resultCh:
+		return text, nil
+	case err := <-errCh:
+		return "", fmt.Errorf("recognize audio failed: %w", err)
+	}
 
 }
 
@@ -130,8 +134,9 @@ func (a *AliyunASRAdapter) connectWebSocket(ctx context.Context) (*websocket.Con
 }
 
 // startResultReceiver 启动一个异步goroutine
-func (a *AliyunASRAdapter) startResultReceiver(ctx context.Context, conn *websocket.Conn, taskID string, resultCh chan string, errCh chan error) {
+func (a *AliyunASRAdapter) startResultReceiver(ctx context.Context, conn *websocket.Conn, resultCh chan string, errCh chan error) {
 	go func() {
+		var builder strings.Builder
 		for {
 			select {
 			case <-ctx.Done():
@@ -139,33 +144,34 @@ func (a *AliyunASRAdapter) startResultReceiver(ctx context.Context, conn *websoc
 			default:
 				_, message, err := conn.ReadMessage()
 				if err != nil {
-					logger.ErrorContext(ctx, "[AliyunASR] Read message failed", "taskID", taskID, "error", err)
+					logger.ErrorContext(ctx, "[AliyunASR] Read message failed", "error", err)
 					errCh <- fmt.Errorf("read message failed: %v", err)
 					return
 				}
-				logger.InfoContext(ctx, "[AliyunASR] Received message", "taskID", taskID)
+				logger.InfoContext(ctx, "[AliyunASR] Received message")
 				var event wsEvent
 				if err := json.Unmarshal(message, &event); err != nil {
-					logger.ErrorContext(ctx, "[AliyunASR] Parse event failed", "taskID", taskID, "error", err)
+					logger.ErrorContext(ctx, "[AliyunASR] Parse event failed", "error", err)
 					continue
 				}
 				switch event.Header.Event {
 				case eventResultGenerate:
-					logger.InfoContext(ctx, "[AliyunASR] Result generated", "taskID", taskID, "text", event.Payload.Output.Sentence.Text)
+					logger.InfoContext(ctx, "[AliyunASR] Result generated", "text", event.Payload.Output.Sentence.Text)
 					sentence := event.Payload.Output.Sentence
 					if sentence.SentenceEnd {
-						logger.InfoContext(ctx, "[AliyunASR] Sentence end", "task_id", taskID, "text", sentence.Text)
-						resultCh <- sentence.Text
+						logger.InfoContext(ctx, "[AliyunASR] Sentence end", "text", sentence.Text)
+						builder.WriteString(sentence.Text)
 					}
 				case eventTaskFinished:
-					logger.InfoContext(ctx, "[AliyunASR] Task finished", "taskID", taskID)
+					logger.InfoContext(ctx, "[AliyunASR] Task finished")
+					resultCh <- builder.String()
 					return
 				case eventTaskFailed:
-					logger.ErrorContext(ctx, "[AliyunASR] Task failed", "taskID", taskID, "error", event.Header.ErrorMessage)
+					logger.ErrorContext(ctx, "[AliyunASR] Task failed", "error", event.Header.ErrorMessage)
 					errCh <- fmt.Errorf("task failed: %v", event.Header.ErrorMessage)
 					return
 				default:
-					logger.InfoContext(ctx, "[AliyunASR] Unexpected event", "taskID", taskID, "event", event.Header.Event)
+					logger.InfoContext(ctx, "[AliyunASR] Unexpected event", "event", event.Header.Event)
 					continue
 				}
 			}
@@ -293,12 +299,11 @@ func (a *AliyunASRAdapter) waitTaskStarted(ctx context.Context, conn *websocket.
 }
 
 // sendAudio 发送音频数据
-func (a *AliyunASRAdapter) sendAudio(
+func (a *AliyunASRAdapter) sendAudioData(
 	ctx context.Context,
 	conn *websocket.Conn,
-	taskID string,
 	audioData []byte,
-) {
+) error {
 	// 分片发送音频数据
 	chunkSize := defaultSendChunkSize
 	// 每次发送间隔，模拟实时音频流速率
@@ -307,8 +312,7 @@ func (a *AliyunASRAdapter) sendAudio(
 	for offset := 0; offset < len(audioData); offset += chunkSize {
 		select {
 		case <-ctx.Done():
-			logger.InfoContext(ctx, "[AliyunASR] Audio sending canceled", "taskID", taskID)
-			return
+			return fmt.Errorf("audio sending canceled: %w", ctx.Err())
 		default:
 		}
 
@@ -320,12 +324,11 @@ func (a *AliyunASRAdapter) sendAudio(
 		// 检查上下文是否已取消
 		select {
 		case <-ctx.Done():
-			return
+			return fmt.Errorf("audio sending canceled: %w", ctx.Err())
 		default:
 		}
 		if err := conn.WriteMessage(websocket.BinaryMessage, audioData[offset:end]); err != nil {
-			logger.ErrorContext(ctx, "[AliyunASR] Send audio chunk failed", "error", err, "taskID", taskID)
-			return
+			return fmt.Errorf("send audio chunk failed: %w", err)
 		}
 
 		// 模拟实时音频流速率
@@ -333,11 +336,10 @@ func (a *AliyunASRAdapter) sendAudio(
 			select {
 			case <-time.After(interval):
 			case <-ctx.Done():
-				return
+				return fmt.Errorf("audio sending canceled: %w", ctx.Err())
 			}
 		}
 	}
-
-	logger.InfoContext(ctx, "[AliyunASR] Audio data sent", "total", len(audioData), "taskID", taskID)
-
+	logger.InfoContext(ctx, "[AliyunASR] Audio data sent successfully", "total", len(audioData))
+	return nil
 }

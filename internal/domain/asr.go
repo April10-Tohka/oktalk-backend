@@ -5,19 +5,16 @@ import "context"
 
 // ASRProvider 语音识别服务提供者接口
 // 用于将音频转换为文本（Automatic Speech Recognition）
-// 接口方法只使用 Go 原生类型，严禁出现任何第三方 SDK 结构体
 type ASRProvider interface {
 	// RecognizeAudio 识别音频数据（同步方式）
 	// 发送完整音频数据，等待所有识别结果返回后汇总为最终文本
 	// 参数:
 	//   - ctx: 上下文，支持超时和取消
 	//   - audioData: 音频二进制数据
-	//   - format: 音频格式，如 "wav", "pcm", "mp3"
-	//   - sampleRate: 采样率，如 16000
 	// 返回:
-	//   - *ASRResult: 识别结果
+	//   - string: 识别结果
 	//   - error: 错误信息
-	RecognizeAudio(ctx context.Context, audioData []byte, format string, sampleRate int) (*ASRResult, error)
+	RecognizeAudio(ctx context.Context, audioData []byte) (string, error)
 
 	// RecognizeAudioStream 流式识别音频数据（异步方式）
 	// 发送音频数据的同时实时接收识别的中间结果和最终结果

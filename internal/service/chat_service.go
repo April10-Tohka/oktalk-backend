@@ -313,12 +313,12 @@ func (s *chatServiceImpl) ChatMVP(ctx context.Context, req *ChatMVPRequest) ([]b
 	}
 
 	// 步骤 2：ASR 识别
-	asrResult, err := s.asrProvider.RecognizeAudio(ctx, req.AudioData, audioType, 16000)
+	asrResult, err := s.asrProvider.RecognizeAudio(ctx, req.AudioData)
 	if err != nil {
 		logger.ErrorContext(ctx, "chat mvp asr failed", "error", err)
 		return nil, err
 	}
-	userText := strings.TrimSpace(asrResult.Text)
+	userText := strings.TrimSpace(asrResult)
 	if userText == "" {
 		err := errors.New("asr result is empty")
 		logger.ErrorContext(ctx, "chat mvp asr empty", "error", err)
@@ -392,9 +392,6 @@ You: "Wonderful! I'm happy too! Why are you happy today?"
 	// 步骤 6：保存对话记录到数据库（失败不影响主流程）
 	if s.conversationRepo != nil && s.messageRepo != nil {
 		var userDuration *int
-		if asrResult.Duration > 0 {
-			userDuration = &asrResult.Duration
-		}
 		var userAudioPtr *string
 		if userAudioURL != "" {
 			userAudioPtr = &userAudioURL
@@ -460,7 +457,7 @@ You: "Wonderful! I'm happy too! Why are you happy today?"
 			DifficultyLevel:  difficultyLevel,
 			ConversationType: conversationType,
 			MessageCount:     currentMsgCount + 2,
-			DurationSeconds:  currentDuration + asrResult.Duration,
+			DurationSeconds:  currentDuration + len(req.AudioData)/16000,
 			Status:           "active",
 		}
 		if saveErr := s.conversationRepo.Update(ctx, conversation); saveErr != nil {
@@ -845,10 +842,10 @@ func (p *ChatTaskProcessor) Process(ctx context.Context, task *worker.Task) (int
 	// ===== A1: ASR 语音识别 =====
 	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "asr")
 
-	var asrResult *domain.ASRResult
+	var asrResult string
 	var asrErr error
 	for retry := 0; retry < 3; retry++ {
-		asrResult, asrErr = p.asrProvider.RecognizeAudio(ctx, payload.AudioData, audioType, 16000)
+		asrResult, asrErr = p.asrProvider.RecognizeAudio(ctx, payload.AudioData)
 		if asrErr == nil {
 			break
 		}
@@ -858,7 +855,7 @@ func (p *ChatTaskProcessor) Process(ctx context.Context, task *worker.Task) (int
 	if asrErr != nil {
 		return nil, resultKey, fmt.Errorf("[asr] %w", asrErr)
 	}
-	userText := strings.TrimSpace(asrResult.Text)
+	userText := strings.TrimSpace(asrResult)
 	if userText == "" {
 		return nil, resultKey, errors.New("[asr] recognition result is empty")
 	}
@@ -973,9 +970,6 @@ Conversation history:
 			aiAudioPtr = &aiAudioURL
 		}
 		var userDuration *int
-		if asrResult.Duration > 0 {
-			userDuration = &asrResult.Duration
-		}
 
 		// Update User Message
 		if userMsg, err := p.messageRepo.GetByID(ctx, userMsgID); err == nil && userMsg != nil {
@@ -1025,7 +1019,7 @@ Conversation history:
 				// 获取实际消息数（考虑到可能是 fallback 创建的）
 				msgCount, _ := p.messageRepo.CountByConversationID(ctx, conversationID)
 				conv.MessageCount = int(msgCount)
-				conv.DurationSeconds += asrResult.Duration
+				conv.DurationSeconds += len(payload.AudioData) / 16000
 				_ = p.conversationRepo.Update(ctx, conv)
 			}
 		}
@@ -1035,7 +1029,6 @@ Conversation history:
 	p.logger.Info("chat completion progress updated (placeholder)",
 		slog.String("task_id", task.ID),
 		slog.String("user_id", task.UserID),
-		slog.Int("audio_duration", asrResult.Duration),
 	)
 
 	// ===== A8: 构建结果 =====
@@ -1047,7 +1040,7 @@ Conversation history:
 		UserID:         task.UserID,
 		UserText:       userText,
 		UserAudioURL:   userAudioURL,
-		DurationMs:     asrResult.Duration * 1000,
+		DurationMs:     len(payload.AudioData) / 16000 * 1000,
 		AIReply:        replyText,
 		AudioURL:       aiAudioURL,
 		CreatedAt:      time.Now().Unix(),
