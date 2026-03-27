@@ -13,6 +13,7 @@ import (
 	"pronunciation-correction-system/internal/domain"
 	"pronunciation-correction-system/internal/model"
 	"pronunciation-correction-system/internal/pkg/uuid"
+	"pronunciation-correction-system/internal/pkg/wav"
 	"pronunciation-correction-system/internal/repository"
 )
 
@@ -251,8 +252,12 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 	if practiceType == "" {
 		practiceType = "word"
 	}
-
-	evalResult, err := s.evalProvider.Assess(ctx, item.Content, req.AudioData, category)
+	// 科大讯飞语音评测接口要求wav格式的音频要转换为pcm格式
+	audioData, err := wav.StripToLinearPCM(req.AudioData)
+	if err != nil {
+		return nil, errHTTP(400, "音频格式无效：请使用 WAV，或 16kHz/16bit/mono 裸 PCM")
+	}
+	evalResult, err := s.evalProvider.Assess(ctx, item.Content, audioData, category)
 	if err != nil {
 		s.logger.Error("pronunciation v2 assess failed", slog.String("error", err.Error()))
 		return nil, errHTTP(500, "评测服务异常")
@@ -279,12 +284,12 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 	aiAudioURL := ""
 	if ttsText != "" {
 		opts := domain.DefaultSynthesizeOptions()
-		opts.Format = "mp3"
+		opts.Format = "wav"
 		audio, ttsErr := s.ttsProvider.Synthesize(ctx, ttsText, opts)
 		if ttsErr != nil {
 			s.logger.Warn("pronunciation v2 TTS failed", slog.String("error", ttsErr.Error()))
 		} else {
-			aiKey := fmt.Sprintf("pronunciation/%s/ai_%s.mp3", req.SessionID, uuid.New())
+			aiKey := fmt.Sprintf("pronunciation/%s/ai_%s.wav", req.SessionID, uuid.New())
 			if u, e2 := s.ossProvider.UploadAudio(ctx, aiKey, audio); e2 != nil {
 				s.logger.Warn("pronunciation v2 AI audio upload failed", slog.String("error", e2.Error()))
 			} else {
@@ -295,22 +300,22 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 
 	pwJSON, _ := json.Marshal(problemWords)
 	rec := &model.PronunciationRecord{
-		ID:           uuid.New(),
-		SessionID:    req.SessionID,
-		UserID:       req.UserID,
-		UnitID:       sess.UnitID,
-		ItemID:       req.ItemID,
-		Content:      item.Content,
-		PracticeType: practiceType,
-		RawScore:     rawScore,
-		Stars:        stars,
-		ProblemWords: string(pwJSON),
-		UserAudioURL: userAudioURL,
-		AIEncourage:  llmOut.Encourage,
-		AIProblemTip: llmOut.ProblemTip,
-		AISuggestion: llmOut.Suggestion,
-		AIAudioURL:   aiAudioURL,
-		IsRejected:   evalResult.IsRejected,
+		ID:            uuid.New(),
+		SessionID:     req.SessionID,
+		UserID:        req.UserID,
+		UnitID:        sess.UnitID,
+		ItemID:        req.ItemID,
+		Content:       item.Content,
+		PracticeType:  practiceType,
+		RawScore:      rawScore,
+		Stars:         stars,
+		ProblemWords:  string(pwJSON),
+		UserAudioURL:  userAudioURL,
+		AIEncourage:   llmOut.Encourage,
+		AIProblemTip:  llmOut.ProblemTip,
+		AISuggestion:  llmOut.Suggestion,
+		AIAudioURL:    aiAudioURL,
+		IsRejected:    evalResult.IsRejected,
 		AccuracyScore: clampFloat32(float32(evalResult.AccuracyScore), 0, 5),
 		Fluency:       clampFloat32(float32(evalResult.FluencyScore), 0, 5),
 		Integrity:     clampFloat32(float32(evalResult.IntegrityScore), 0, 5),
