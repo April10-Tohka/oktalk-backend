@@ -114,11 +114,11 @@ func (s *SceneService) StartSession(ctx context.Context, req *SceneStartSessionR
 	}
 
 	var (
-		sess          *model.SceneSession
-		isResumed     bool
-		currentStep   int
-		step          *config.SceneStep
-		sessionID     string
+		sess        *model.SceneSession
+		isResumed   bool
+		currentStep int
+		step        *config.SceneStep
+		sessionID   string
 	)
 
 	existing, err := s.sessionRepo.FindActiveByUserAndScene(ctx, req.UserID, req.SceneID)
@@ -172,13 +172,13 @@ func (s *SceneService) synthQuestionAudio(ctx context.Context, sessionID, text s
 		return ""
 	}
 	opts := domain.DefaultSynthesizeOptions()
-	opts.Format = "mp3"
+	opts.Format = "wav"
 	audio, err := s.ttsProvider.Synthesize(ctx, text, opts)
 	if err != nil {
 		s.logger.Warn("scene TTS question failed", slog.String("error", err.Error()))
 		return ""
 	}
-	key := fmt.Sprintf("scene/%s/q_%s.mp3", sessionID, uuid.New())
+	key := fmt.Sprintf("scene/%s/q_%s.wav", sessionID, uuid.New())
 	url, err := s.ossProvider.UploadAudio(ctx, key, audio)
 	if err != nil {
 		s.logger.Warn("scene OSS question upload failed", slog.String("error", err.Error()))
@@ -191,23 +191,23 @@ func (s *SceneService) synthQuestionAudio(ctx context.Context, sessionID, text s
 
 // SubmitAnswerRequest 提交回答
 type SubmitAnswerRequest struct {
-	UserID     string
-	SessionID  string
-	StepID     int
-	AudioData  []byte
-	AudioType  string // wav / mp3 / pcm
+	UserID    string
+	SessionID string
+	StepID    int
+	AudioData []byte
+	AudioType string // wav / mp3 / pcm
 }
 
 // SubmitAnswerResponse 提交回答响应
 type SubmitAnswerResponse struct {
-	UserText            string `json:"user_text"`
-	MatchResult         string `json:"match_result"`
-	AIReplyText         string `json:"ai_reply_text"`
-	AIAudioURL          string `json:"ai_audio_url"`
-	ShouldAdvance       bool   `json:"step_advanced"`
-	SceneCompleted      bool   `json:"scene_completed"`
-	CurrentStep         int    `json:"current_step"`
-	NextQuestion        string `json:"next_question,omitempty"`
+	UserText             string `json:"user_text"`
+	MatchResult          string `json:"match_result"`
+	AIReplyText          string `json:"ai_reply_text"`
+	AIAudioURL           string `json:"ai_audio_url"`
+	ShouldAdvance        bool   `json:"step_advanced"`
+	SceneCompleted       bool   `json:"scene_completed"`
+	CurrentStep          int    `json:"current_step"`
+	NextQuestion         string `json:"next_question,omitempty"`
 	NextQuestionAudioURL string `json:"next_question_audio_url,omitempty"`
 }
 
@@ -302,12 +302,12 @@ func (s *SceneService) SubmitAnswer(ctx context.Context, req *SubmitAnswerReques
 	aiAudioURL := ""
 	if reply.Reply != "" {
 		opts := domain.DefaultSynthesizeOptions()
-		opts.Format = "mp3"
+		opts.Format = "wav"
 		audio, err := s.ttsProvider.Synthesize(ctx, reply.Reply, opts)
 		if err != nil {
 			s.logger.Warn("scene TTS reply failed", slog.String("error", err.Error()))
 		} else {
-			key := fmt.Sprintf("scene/%s/ai_%s.mp3", req.SessionID, uuid.New())
+			key := fmt.Sprintf("scene/%s/ai_%s.wav", req.SessionID, uuid.New())
 			url, upErr := s.ossProvider.UploadAudio(ctx, key, audio)
 			if upErr != nil {
 				s.logger.Warn("scene OSS ai audio failed", slog.String("error", upErr.Error()))
@@ -595,4 +595,3 @@ func (s *SceneService) GetHistory(ctx context.Context, userID, sessionID string)
 	}
 	return &GetHistoryResponse{Messages: list}, nil
 }
-
