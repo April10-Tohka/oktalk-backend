@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"sort"
 	"strings"
 	"time"
@@ -147,46 +146,16 @@ type ReportDetailResponse struct {
 	Report *ReportMVPResponse `json:"report,omitempty"`
 }
 
-// ReportSummary 报告列表摘要（最新周报列表）
+// ReportSummary 报告列表摘要
 type ReportSummary struct {
 	ReportID          string `json:"report_id"`
-	WeekStart         string `json:"week_start"`
-	WeekEnd           string `json:"week_end"`
+	ReportType        string `json:"report_type"`
 	CreatedAt         string `json:"created_at"`
-	AccuracyScore     int    `json:"accuracy_score"`
-	PersistenceDays   int    `json:"persistence_days"`
-}
-
-// ReportWeeklyDetail 异步周报详情（与 content JSON 对齐，供 GET /report/:id）
-type ReportWeeklyDetail struct {
-	ReportID  string `json:"report_id"`
-	WeekStart string `json:"week_start"`
-	WeekEnd   string `json:"week_end"`
-	CreatedAt string `json:"created_at"`
-	Activity  struct {
-		ConversationCount int `json:"conversation_count"`
-		EvaluationCount   int `json:"evaluation_count"`
-		PersistenceDays   int `json:"persistence_days"`
-		PersistenceRate   int `json:"persistence_rate"`
-	} `json:"activity"`
-	Radar struct {
-		AccuracyScore  int `json:"accuracy_score"`
-		FluencyScore   int `json:"fluency_score"`
-		IntegrityScore int `json:"integrity_score"`
-	} `json:"radar"`
-	HardWords []struct {
-		Word     string `json:"word"`
-		Count    int    `json:"count"`
-		AudioURL string `json:"audio_url"`
-	} `json:"hard_words"`
-	Encourage struct {
-		EncourageText string `json:"encourage_text"`
-	} `json:"encourage"`
-	FullReport struct {
-		Summary      string   `json:"summary"`
-		Strengths    []string `json:"strengths"`
-		Improvements []string `json:"improvements"`
-	} `json:"full_report"`
+	StartDate         string `json:"start_date"`
+	EndDate           string `json:"end_date"`
+	AccuracyScore     int    `json:"accuracy_score,omitempty"`
+	PersistenceDays   int    `json:"persistence_days,omitempty"`
+	EvaluationCount   int    `json:"evaluation_count,omitempty"`
 }
 
 // DashboardResponse 学习统计面板响应
@@ -200,12 +169,6 @@ type DashboardResponse struct {
 }
 
 // ===== Service 接口 =====
-
-// ErrReportNotFound 报告不存在
-var ErrReportNotFound = errors.New("report not found")
-
-// ErrReportAccessDenied 无权访问该报告
-var ErrReportAccessDenied = errors.New("report access denied")
 
 // ReportService 智能学习报告业务接口
 type ReportService interface {
@@ -221,9 +184,6 @@ type ReportService interface {
 	// GetReport 获取报告完整详情
 	GetReport(ctx context.Context, reportID, userID string) (*ReportDetailResponse, error)
 
-	// GetReportDetail 从库表 content 解析周报 JSON（需本人）
-	GetReportDetail(ctx context.Context, reportID, userID string) (*ReportWeeklyDetail, error)
-
 	// GetReportList 获取用户报告列表
 	GetReportList(ctx context.Context, userID string, page, pageSize int) ([]*ReportSummary, int64, error)
 
@@ -232,21 +192,29 @@ type ReportService interface {
 
 	// GetDashboard 获取学习统计面板
 	GetDashboard(ctx context.Context, userID string) (*DashboardResponse, error)
+
+	// GenerateWeeklyReport 同步生成智能周报（落库 content + is_latest）
+	GenerateWeeklyReport(ctx context.Context, userID string) (*WeeklyReportData, string, error)
+	// GetWeeklyReportList 最新周报列表（is_latest=true）
+	GetWeeklyReportList(ctx context.Context, userID string) ([]WeeklyReportListItem, error)
+	// GetWeeklyReportByID 按报告主键取周报 JSON（校验归属）
+	GetWeeklyReportByID(ctx context.Context, reportID, userID string) (*WeeklyReportData, error)
 }
 
 // ===== Service 实现 =====
 
 // reportServiceImpl Report Service 实现
 type reportServiceImpl struct {
-	repos            *db.Repositories
-	llmProvider      domain.LLMProvider
-	ttsProvider      domain.TTSProvider
-	ossProvider      domain.OSSProvider
-	taskCache        *cache.TaskCache
-	reportCache      *cache.ReportCache
-	workerManager    *worker.Manager
-	rateLimitFactory domain.SceneLimiterFactory
-	logger           *slog.Logger
+	repos               *db.Repositories
+	llmProvider         domain.LLMProvider
+	ttsProvider         domain.TTSProvider
+	ossProvider         domain.OSSProvider
+	taskCache           *cache.TaskCache
+	reportCache         *cache.ReportCache
+	workerManager       *worker.Manager
+	rateLimitFactory    domain.SceneLimiterFactory
+	pronunciationLoader *config.PronunciationLoader
+	logger              *slog.Logger
 }
 
 // NewReportService 创建 ReportService
@@ -259,18 +227,20 @@ func NewReportService(
 	reportCache *cache.ReportCache,
 	workerMgr *worker.Manager,
 	rlFactory domain.SceneLimiterFactory,
+	pronunciationLoader *config.PronunciationLoader,
 	logger *slog.Logger,
 ) ReportService {
 	return &reportServiceImpl{
-		repos:            repos,
-		llmProvider:      llmProvider,
-		ttsProvider:      ttsProvider,
-		ossProvider:      ossProvider,
-		taskCache:        taskCache,
-		reportCache:      reportCache,
-		workerManager:    workerMgr,
-		rateLimitFactory: rlFactory,
-		logger:           logger,
+		repos:               repos,
+		llmProvider:         llmProvider,
+		ttsProvider:         ttsProvider,
+		ossProvider:         ossProvider,
+		taskCache:           taskCache,
+		reportCache:         reportCache,
+		workerManager:       workerMgr,
+		rateLimitFactory:    rlFactory,
+		pronunciationLoader: pronunciationLoader,
+		logger:              logger,
 	}
 }
 
@@ -550,13 +520,20 @@ func (s *reportServiceImpl) GenerateReport(ctx context.Context, req *GenerateRep
 			weekday = 7
 		}
 		periodStart = time.Date(now.Year(), now.Month(), now.Day()-weekday+1, 0, 0, 0, 0, now.Location())
-		periodEnd = time.Date(now.Year(), now.Month(), now.Day()-weekday+7, 23, 59, 59, 999999999, now.Location())
+		periodEnd = periodStart.AddDate(0, 0, 7).Add(-time.Nanosecond)
 	}
-	// 步骤 4：检查数据量是否足够（发音评测 + 场景对话）
-	evalCount, _ := s.repos.LearningReport.CountEvaluations(ctx, req.UserID, periodStart, periodEnd)
-	convCount, _ := s.repos.LearningReport.CountConversations(ctx, req.UserID, periodStart, periodEnd)
-	if evalCount+convCount < 3 {
-		return "", fmt.Errorf("学习记录不足，至少需要 3 条（当前 %d 条）", evalCount+convCount)
+	// 步骤 4：检查数据量是否足够
+	evalStats, _ := s.repos.PronunciationEvaluation.GetStatsByUserAndDateRange(ctx, req.UserID, periodStart, periodEnd)
+	convStats, _ := s.repos.VoiceConversation.GetStatsByUserAndDateRange(ctx, req.UserID, periodStart, periodEnd)
+	activityCount := 0
+	if evalStats != nil {
+		activityCount += evalStats.TotalCount
+	}
+	if convStats != nil {
+		activityCount += convStats.TotalCount
+	}
+	if activityCount < 3 {
+		return "", fmt.Errorf("数据不足，至少需要 3 条学习记录（当前 %d 条）", activityCount)
 	}
 
 	// 步骤 4.5：幂等检查（冷却期机制）
@@ -614,7 +591,6 @@ func (s *reportServiceImpl) GenerateReport(ctx context.Context, req *GenerateRep
 			ReportType:      reportType,
 			PeriodStartDate: periodStart,
 			PeriodEndDate:   periodEnd,
-			IsLatest:        true,
 		}
 		if err := s.repos.LearningReport.Create(ctx, reportModel); err != nil {
 			return "", fmt.Errorf("create report model: %w", err)
@@ -839,79 +815,40 @@ func (s *reportServiceImpl) getReportFromDB(ctx context.Context, reportID, userI
 }
 
 func (s *reportServiceImpl) GetReportList(ctx context.Context, userID string, page, pageSize int) ([]*ReportSummary, int64, error) {
-	list, err := s.repos.LearningReport.ListByUserID(ctx, userID)
+	items, err := s.GetWeeklyReportList(ctx, userID)
 	if err != nil {
 		return nil, 0, err
 	}
-	out := make([]*ReportSummary, 0, len(list))
-	for _, r := range list {
-		sum := &ReportSummary{
-			ReportID: r.ID,
-			WeekStart: r.PeriodStartDate.Format("2006-01-02"),
-			WeekEnd:   r.PeriodEndDate.Format("2006-01-02"),
-			CreatedAt: r.CreatedAt.UTC().Format(time.RFC3339),
-		}
-		if r.Content != "" {
-			var snippet struct {
-				Radar struct {
-					AccuracyScore int `json:"accuracy_score"`
-				} `json:"radar"`
-				Activity struct {
-					PersistenceDays int `json:"persistence_days"`
-				} `json:"activity"`
-			}
-			if err := json.Unmarshal([]byte(r.Content), &snippet); err == nil {
-				sum.AccuracyScore = snippet.Radar.AccuracyScore
-				sum.PersistenceDays = snippet.Activity.PersistenceDays
-			}
-		}
-		out = append(out, sum)
-	}
-	// 简单分页（page/pageSize 从 1 起；0 表示不分页）
-	if page == 0 && pageSize == 0 {
-		return out, int64(len(out)), nil
-	}
+	total := int64(len(items))
 	if page < 1 {
 		page = 1
 	}
 	if pageSize < 1 {
-		pageSize = 20
+		pageSize = 10
 	}
 	start := (page - 1) * pageSize
-	if start >= len(out) {
-		return []*ReportSummary{}, int64(len(out)), nil
+	if start > len(items) {
+		start = len(items)
 	}
 	end := start + pageSize
-	if end > len(out) {
-		end = len(out)
+	if end > len(items) {
+		end = len(items)
 	}
-	return out[start:end], int64(len(out)), nil
-}
-
-func (s *reportServiceImpl) GetReportDetail(ctx context.Context, reportID, userID string) (*ReportWeeklyDetail, error) {
-	if reportID == "" {
-		return nil, errors.New("report_id is empty")
+	slice := items[start:end]
+	out := make([]*ReportSummary, 0, len(slice))
+	for _, it := range slice {
+		out = append(out, &ReportSummary{
+			ReportID:        it.ReportID,
+			ReportType:      "weekly",
+			CreatedAt:       it.CreatedAt,
+			StartDate:       it.WeekStart,
+			EndDate:         it.WeekEnd,
+			AccuracyScore:   it.AccuracyScore,
+			PersistenceDays: it.PersistenceDays,
+			EvaluationCount: it.EvaluationCount,
+		})
 	}
-	report, err := s.repos.LearningReport.FindByID(ctx, reportID)
-	if err != nil {
-		return nil, err
-	}
-	if report == nil {
-		return nil, ErrReportNotFound
-	}
-	if report.UserID != userID {
-		return nil, ErrReportAccessDenied
-	}
-	if report.Content == "" {
-		return nil, fmt.Errorf("report content not ready")
-	}
-	var detail ReportWeeklyDetail
-	if err := json.Unmarshal([]byte(report.Content), &detail); err != nil {
-		return nil, fmt.Errorf("parse report content: %w", err)
-	}
-	detail.ReportID = report.ID
-	detail.CreatedAt = report.CreatedAt.UTC().Format(time.RFC3339)
-	return &detail, nil
+	return out, total, nil
 }
 
 func (s *reportServiceImpl) DeleteReport(ctx context.Context, reportID, userID string) error {
@@ -944,7 +881,6 @@ type reportPayloadData struct {
 // ReportTaskProcessor 实现 worker.TaskProcessor 接口
 type ReportTaskProcessor struct {
 	repos       *db.Repositories
-	pronLoader  *config.PronunciationLoader
 	llmProvider domain.LLMProvider
 	ttsProvider domain.TTSProvider
 	ossProvider domain.OSSProvider
@@ -955,7 +891,6 @@ type ReportTaskProcessor struct {
 // NewReportTaskProcessor 创建 ReportTaskProcessor
 func NewReportTaskProcessor(
 	repos *db.Repositories,
-	pronLoader *config.PronunciationLoader,
 	llm domain.LLMProvider,
 	tts domain.TTSProvider,
 	oss domain.OSSProvider,
@@ -964,7 +899,6 @@ func NewReportTaskProcessor(
 ) *ReportTaskProcessor {
 	return &ReportTaskProcessor{
 		repos:       repos,
-		pronLoader:  pronLoader,
 		llmProvider: llm,
 		ttsProvider: tts,
 		ossProvider: oss,
@@ -973,8 +907,9 @@ func NewReportTaskProcessor(
 	}
 }
 
-// Process 实现 worker.TaskProcessor 接口（周报：pronunciation_records + scene_messages + LLM）
+// Process 实现 worker.TaskProcessor 接口
 func (p *ReportTaskProcessor) Process(ctx context.Context, task *worker.Task) (interface{}, string, error) {
+	// 反序列化 payload
 	var payload reportPayloadData
 	if err := json.Unmarshal(task.Payload, &payload); err != nil {
 		return nil, "", fmt.Errorf("unmarshal report payload: %w", err)
@@ -983,242 +918,238 @@ func (p *ReportTaskProcessor) Process(ctx context.Context, task *worker.Task) (i
 	resultKey := fmt.Sprintf(cache.KeyReportResult, reportID)
 	reportType := payload.ReportType
 
-	loc := time.Local
-	ws, err := time.ParseInLocation("2006-01-02", payload.StartDate, loc)
-	if err != nil {
-		return nil, "", fmt.Errorf("parse start_date: %w", err)
+	// 解析日期范围
+	periodStart, _ := time.Parse("2006-01-02", payload.StartDate)
+	periodEnd, _ := time.Parse("2006-01-02", payload.EndDate)
+	if periodEnd.IsZero() {
+		periodEnd = periodStart.AddDate(0, 0, 7)
 	}
-	we, err := time.ParseInLocation("2006-01-02", payload.EndDate, loc)
-	if err != nil {
-		return nil, "", fmt.Errorf("parse end_date: %w", err)
-	}
-	weekStart := time.Date(ws.Year(), ws.Month(), ws.Day(), 0, 0, 0, 0, loc)
-	weekEnd := time.Date(we.Year(), we.Month(), we.Day(), 23, 59, 59, 999999999, loc)
-	userID := task.UserID
 
+	// ===== A1: 查询评测数据 =====
 	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "fetching_eval_data")
 
-	evalCount, err := p.repos.LearningReport.CountEvaluations(ctx, userID, weekStart, weekEnd)
+	evalStats, err := p.repos.PronunciationEvaluation.GetStatsByUserAndDateRange(ctx, task.UserID, periodStart, periodEnd)
 	if err != nil {
-		p.logger.Warn("report CountEvaluations", slog.String("error", err.Error()))
-		evalCount = 0
-	}
-	convCount, err := p.repos.LearningReport.CountConversations(ctx, userID, weekStart, weekEnd)
-	if err != nil {
-		p.logger.Warn("report CountConversations", slog.String("error", err.Error()))
-		convCount = 0
-	}
-	persistDays, err := p.repos.LearningReport.CountPersistenceDays(ctx, userID, weekStart, weekEnd)
-	if err != nil {
-		p.logger.Warn("report CountPersistenceDays", slog.String("error", err.Error()))
-		persistDays = 0
-	}
-	persistRate := persistDays * 100 / 7
-
-	avgRaw, avgFluency, avgIntegrity, err := p.repos.LearningReport.GetRadarScores(ctx, userID, weekStart, weekEnd)
-	if err != nil {
-		p.logger.Warn("report GetRadarScores", slog.String("error", err.Error()))
-		avgRaw, avgFluency, avgIntegrity = 0, 0, 0
-	}
-	to100 := func(avg float32) int {
-		s := int(math.Round(float64(avg) * 20))
-		if s < 0 {
-			s = 0
-		}
-		if s > 100 {
-			s = 100
-		}
-		return s
-	}
-	accuracyScore := to100(avgRaw)
-	fluencyScore := to100(avgFluency)
-	integrityScore := to100(avgIntegrity)
-
-	hardWords, err := p.repos.LearningReport.GetHardWords(ctx, userID, weekStart, weekEnd)
-	if err != nil {
-		p.logger.Warn("report GetHardWords", slog.String("error", err.Error()))
-		hardWords = nil
+		p.logger.Warn("Report: query eval stats failed, use zeros", slog.String("error", err.Error()))
+		evalStats = &db.EvaluationStats{ProblemWords: make(map[string]int)}
 	}
 
-	type hwItem struct {
-		Word     string `json:"word"`
-		Count    int    `json:"count"`
-		AudioURL string `json:"audio_url"`
-	}
-	var hardWordsJSON []hwItem
-	for _, hw := range hardWords {
-		hardWordsJSON = append(hardWordsJSON, hwItem{
-			Word:     hw.Word,
-			Count:    hw.Count,
-			AudioURL: findPronunciationAudioURL(p.pronLoader, hw.Word),
-		})
+	// ===== A2: 查询对话数据 =====
+	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "fetching_chat_data")
+
+	convStats, err := p.repos.VoiceConversation.GetStatsByUserAndDateRange(ctx, task.UserID, periodStart, periodEnd)
+	if err != nil {
+		p.logger.Warn("Report: query conv stats failed, use zeros", slog.String("error", err.Error()))
+		convStats = &db.ConversationStats{}
 	}
 
+	// ===== A3: 计算评测统计 =====
+	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "analyzing_eval")
+
+	totalMinutes := convStats.TotalDurationSeconds / 60
+
+	// 高频问题单词 Top 5
+	type wordFreq struct {
+		Word      string
+		Frequency int
+	}
+	var sortedWords []wordFreq
+	for w, f := range evalStats.ProblemWords {
+		sortedWords = append(sortedWords, wordFreq{Word: w, Frequency: f})
+	}
+	sort.Slice(sortedWords, func(i, j int) bool {
+		return sortedWords[i].Frequency > sortedWords[j].Frequency
+	})
+	if len(sortedWords) > 5 {
+		sortedWords = sortedWords[:5]
+	}
+
+	// ===== A4: 计算进步趋势 =====
+	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "calculating_progress")
+
+	var prevStart, prevEnd time.Time
+	switch reportType {
+	case "monthly":
+		prevStart = periodStart.AddDate(0, -1, 0)
+		prevEnd = periodStart
+	default:
+		prevStart = periodStart.AddDate(0, 0, -7)
+		prevEnd = periodStart
+	}
+	prevAvgScore, _ := p.repos.PronunciationEvaluation.GetAverageScoreByUserIDAndDateRange(ctx, task.UserID, prevStart, prevEnd)
+	currentScore := evalStats.AvgOverallScore
+	scoreChange := currentScore - prevAvgScore
+
+	// ===== A5: LLM 生成报告 =====
 	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "generating_report")
 
-	sysEnc := `你是一位儿童英语学习助手，说话简短活泼，多用 emoji，语气温暖鼓励。
-只能返回 JSON，不允许返回任何其他内容。`
-	userEnc := fmt.Sprintf(`小朋友这周的学习情况：
-- 发音评测次数：%d 次
-- 场景对话次数：%d 次
-- 坚持学习天数：%d 天
-- 发音准确度：%d 分（满分100）
+	llmStats := &llmPrompts.ReportStats{
+		StartDate:         payload.StartDate,
+		EndDate:           payload.EndDate,
+		ConversationCount: convStats.TotalCount,
+		EvaluationCount:   evalStats.TotalCount,
+		TotalMinutes:      totalMinutes,
+		ActiveDays:        convStats.ActiveDays,
+		AvgAccuracy:       evalStats.AvgAccuracyScore,
+		AvgFluency:        evalStats.AvgFluencyScore,
+		AvgIntegrity:      evalStats.AvgIntegrityScore,
+		AvgOverall:        currentScore,
+		SCount:            evalStats.SLevelCount,
+		ACount:            evalStats.ALevelCount,
+		BCount:            evalStats.BLevelCount,
+		CCount:            evalStats.CLevelCount,
+		PreviousScore:     prevAvgScore,
+		CurrentScore:      currentScore,
+		ScoreChange:       scoreChange,
+		ProblemWords:      evalStats.ProblemWords,
+	}
 
-请生成一段简短的鼓励话语，只返回：
-{"encourage_text": "两句话以内的鼓励，儿童友好，多 emoji"}`,
-		evalCount, convCount, persistDays, accuracyScore)
-	encourageText := "你这周练习很认真！🌟 继续加油，你的英语越来越棒了！💪"
-	if raw, err := p.llmProvider.Chat(ctx, sysEnc, userEnc); err != nil {
-		p.logger.Warn("report encourage LLM failed", slog.String("error", err.Error()))
+	systemPrompt, userMsg := llmPrompts.GenerateReportPrompt(llmStats)
+	var reportData llmPrompts.LLMReportData
+
+	llmResponse, llmErr := p.llmProvider.Chat(ctx, systemPrompt, userMsg)
+	if llmErr != nil {
+		p.logger.Warn("Report LLM failed, use defaults", slog.String("error", llmErr.Error()))
+		reportData = llmPrompts.GetDefaultReportData()
 	} else {
-		js := extractJSONObject(raw)
-		var wrap struct {
-			EncourageText string `json:"encourage_text"`
-		}
-		if err := json.Unmarshal([]byte(js), &wrap); err == nil && wrap.EncourageText != "" {
-			encourageText = wrap.EncourageText
+		if parseErr := json.Unmarshal([]byte(llmResponse), &reportData); parseErr != nil {
+			p.logger.Warn("Report LLM JSON parse failed, use defaults", slog.String("error", parseErr.Error()))
+			reportData = llmPrompts.GetDefaultReportData()
 		}
 	}
 
-	hardWordsText := ""
-	for _, hw := range hardWords {
-		hardWordsText += fmt.Sprintf("- %s（出现 %d 次）\n", hw.Word, hw.Count)
-	}
-	if hardWordsText == "" {
-		hardWordsText = "本周无高频难词，发音很棒！"
-	}
-	sysFull := `你是一位专业的儿童英语学习报告生成助手，语气友好温暖，面向家长和孩子。
-只能返回 JSON，不允许返回任何其他内容。`
-	userFull := fmt.Sprintf(`以下是小朋友本周（%s 至 %s）的英语学习数据：
+	// ===== A6: TTS 问题单词 + OSS 上传 =====
+	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "generating_recommendations")
 
-学习活跃度：
-- 场景对话：%d 次
-- 发音评测：%d 次
-- 坚持学习：%d 天（共7天）
-
-能力评估（满分100）：
-- 发音准确度：%d
-- 发音流利度：%d
-- 发音完整度：%d
-
-本周难词（出现频率最高）：
-%s
-
-请生成本周学习报告，只返回如下 JSON：
-{"summary":"3-5句话的总结，包含优点肯定和改进建议","strengths":["优点1","优点2"],"improvements":["建议1"]}`,
-		payload.StartDate, payload.EndDate,
-		convCount, evalCount, persistDays,
-		accuracyScore, fluencyScore, integrityScore,
-		hardWordsText)
-
-	summary := "这周学习很认真！发音练习和对话都有参与，继续保持！"
-	strengths := []string{"坚持练习"}
-	improvements := []string{"多练习发音"}
-	if raw, err := p.llmProvider.Chat(ctx, sysFull, userFull); err != nil {
-		p.logger.Warn("report full LLM failed", slog.String("error", err.Error()))
-	} else {
-		js := extractJSONObject(raw)
-		var wrap struct {
-			Summary      string   `json:"summary"`
-			Strengths    []string `json:"strengths"`
-			Improvements []string `json:"improvements"`
+	var difficultWords []DifficultWord
+	for _, wf := range sortedWords {
+		dw := DifficultWord{
+			Word:      wf.Word,
+			Frequency: wf.Frequency,
 		}
-		if err := json.Unmarshal([]byte(js), &wrap); err == nil && wrap.Summary != "" {
-			summary = wrap.Summary
-			if len(wrap.Strengths) > 0 {
-				strengths = wrap.Strengths
-			}
-			if len(wrap.Improvements) > 0 {
-				improvements = wrap.Improvements
+		if p.ttsProvider != nil && p.ossProvider != nil {
+			ttsData, ttsErr := p.ttsProvider.Synthesize(ctx, wf.Word, nil)
+			if ttsErr == nil && len(ttsData) > 0 {
+				ossKey := fmt.Sprintf("report/demo/%s/%s_%s.mp3",
+					task.UserID, wf.Word, time.Now().Format("20060102150405"))
+				audioURL, ossErr := p.ossProvider.UploadBytes(ctx, ossKey, ttsData, "audio/mpeg")
+				if ossErr == nil {
+					dw.DemoAudioURL = audioURL
+				}
 			}
 		}
+		difficultWords = append(difficultWords, dw)
 	}
 
-	reportContent := map[string]interface{}{
-		"week_start": weekStart.Format("2006-01-02"),
-		"week_end":   we.Format("2006-01-02"),
-		"activity": map[string]interface{}{
-			"conversation_count": convCount,
-			"evaluation_count":   evalCount,
-			"persistence_days":     persistDays,
-			"persistence_rate":     persistRate,
-		},
-		"radar": map[string]interface{}{
-			"accuracy_score":  accuracyScore,
-			"fluency_score":   fluencyScore,
-			"integrity_score": integrityScore,
-		},
-		"hard_words": hardWordsJSON,
-		"encourage": map[string]interface{}{
-			"encourage_text": encourageText,
-		},
-		"full_report": map[string]interface{}{
-			"summary":      summary,
-			"strengths":    strengths,
-			"improvements": improvements,
-		},
-	}
-	contentBytes, err := json.Marshal(reportContent)
-	if err != nil {
-		return nil, "", fmt.Errorf("marshal report content: %w", err)
-	}
-
+	// ===== A7: 保存报告到数据库 =====
 	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "saving")
 
-	if err := p.repos.LearningReport.UpdateContent(ctx, reportID, string(contentBytes), task.ID); err != nil {
-		p.logger.Error("report UpdateContent failed", slog.String("error", err.Error()))
-		return nil, "", fmt.Errorf("update report content: %w", err)
-	}
-	if err := p.repos.LearningReport.MarkOldReportsNotLatest(ctx, userID, reportType, weekStart, reportID); err != nil {
-		p.logger.Warn("report MarkOldReportsNotLatest failed", slog.String("error", err.Error()))
+	if p.repos != nil {
+		report, err := p.repos.LearningReport.GetByID(ctx, reportID)
+		if err == nil && report != nil {
+			report.PeriodStartDate = periodStart
+			report.PeriodEndDate = periodEnd
+			report.TotalConversations = convStats.TotalCount
+			report.TotalEvaluations = evalStats.TotalCount
+			report.TotalStudyMinutes = totalMinutes
+			report.AverageEvaluationScore = currentScore
+			report.AverageAccuracyScore = evalStats.AvgAccuracyScore
+			report.AverageFluencyScore = evalStats.AvgFluencyScore
+			report.AverageIntegrityScore = evalStats.AvgIntegrityScore
+			report.SLevelCount = evalStats.SLevelCount
+			report.ALevelCount = evalStats.ALevelCount
+			report.BLevelCount = evalStats.BLevelCount
+			report.CLevelCount = evalStats.CLevelCount
+			report.ImprovementRate = scoreChange
+			report.Recommendations = toStringPtr(reportData.FullText)
+			report.Strengths = model.StringArray(reportData.Highlights)
+			report.Weaknesses = model.StringArray(reportData.ImprovementAreas)
+			if updateErr := p.repos.LearningReport.Update(ctx, report); updateErr != nil {
+				p.logger.Error("update report db failed", slog.String("error", updateErr.Error()))
+			}
+		} else {
+			// Fallback: create if missing
+			reportModel := &model.LearningReport{
+				ID:                     reportID,
+				UserID:                 task.UserID,
+				ReportType:             reportType,
+				PeriodStartDate:        periodStart,
+				PeriodEndDate:          periodEnd,
+				TotalConversations:     convStats.TotalCount,
+				TotalEvaluations:       evalStats.TotalCount,
+				TotalStudyMinutes:      totalMinutes,
+				AverageEvaluationScore: currentScore,
+				AverageAccuracyScore:   evalStats.AvgAccuracyScore,
+				AverageFluencyScore:    evalStats.AvgFluencyScore,
+				AverageIntegrityScore:  evalStats.AvgIntegrityScore,
+				SLevelCount:            evalStats.SLevelCount,
+				ALevelCount:            evalStats.ALevelCount,
+				BLevelCount:            evalStats.BLevelCount,
+				CLevelCount:            evalStats.CLevelCount,
+				ImprovementRate:        scoreChange,
+				Recommendations:        toStringPtr(reportData.FullText),
+				Strengths:              model.StringArray(reportData.Highlights),
+				Weaknesses:             model.StringArray(reportData.ImprovementAreas),
+			}
+
+			for dbRetry := 0; dbRetry < 3; dbRetry++ {
+				if saveErr := p.repos.LearningReport.Create(ctx, reportModel); saveErr != nil {
+					p.logger.Error("save report db retry", slog.Int("attempt", dbRetry+1), slog.String("error", saveErr.Error()))
+					time.Sleep(time.Duration(dbRetry+1) * 500 * time.Millisecond)
+					continue
+				}
+				break
+			}
+		}
+
 	}
 
-	difficultWords := make([]DifficultWord, 0, len(hardWordsJSON))
-	for _, h := range hardWordsJSON {
-		difficultWords = append(difficultWords, DifficultWord{
-			Word:         h.Word,
-			Frequency:    h.Count,
-			DemoAudioURL: h.AudioURL,
-		})
-	}
-	smallGoal := "继续加油"
-	if len(improvements) > 0 {
-		smallGoal = improvements[0]
-	}
-
+	// ===== A8: 构建 ReportMVPResponse 并返回 =====
 	_ = p.taskCache.UpdateTaskStage(ctx, task.ID, "completed")
 
 	result := &ReportMVPResponse{
 		ReportID:        reportID,
 		ReportType:      reportType,
-		PeriodStartDate: weekStart.Format("2006-01-02"),
-		PeriodEndDate:   we.Format("2006-01-02"),
+		PeriodStartDate: periodStart.Format("2006-01-02"),
+		PeriodEndDate:   periodEnd.Format("2006-01-02"),
+
 		ActivityStats: &ActivityStats{
-			ConversationCount: convCount,
-			EvaluationCount:   evalCount,
-			TotalMinutes:      0,
-			ActiveDays:        persistDays,
+			ConversationCount: convStats.TotalCount,
+			EvaluationCount:   evalStats.TotalCount,
+			TotalMinutes:      totalMinutes,
+			ActiveDays:        convStats.ActiveDays,
 		},
+
 		AbilityRadar: &AbilityRadar{
-			AccuracyScore:  float64(accuracyScore),
-			FluencyScore:   float64(fluencyScore),
-			IntegrityScore: float64(integrityScore),
-			Summary:        summary,
+			AccuracyScore:  evalStats.AvgAccuracyScore,
+			FluencyScore:   evalStats.AvgFluencyScore,
+			IntegrityScore: evalStats.AvgIntegrityScore,
+			Summary:        reportData.AbilityAnalysis,
 		},
+
 		ProgressStats: &ProgressStats{
-			Highlights: strengths,
+			OverallScoreChange: int(scoreChange),
+			PreviousScore:      prevAvgScore,
+			CurrentScore:       currentScore,
+			Highlights:         reportData.Highlights,
+			LevelImprovement:   reportData.ProgressHighlight,
 		},
+
 		KidFriendlyCard: &KidFriendlyCard{
-			EncouragementText: encourageText,
-			Highlights:        strengths,
-			SmallGoal:         smallGoal,
+			EncouragementText: reportData.EncouragementText,
+			Highlights:        reportData.Highlights,
+			SmallGoal:         reportData.SmallGoal,
 		},
+
 		DifficultWords: difficultWords,
+
 		FullReport: &FullReport{
-			PeriodSummary:     summary,
-			ImprovementAreas:  improvements,
-			Recommendations:   improvements,
-			FullText:          summary,
+			PeriodSummary:     reportData.PeriodSummary,
+			AbilityAnalysis:   reportData.AbilityAnalysis,
+			ProgressHighlight: reportData.ProgressHighlight,
+			ImprovementAreas:  reportData.ImprovementAreas,
+			Recommendations:   reportData.Recommendations,
+			FullText:          reportData.FullText,
 		},
 	}
 	if result.DifficultWords == nil {
@@ -1226,24 +1157,6 @@ func (p *ReportTaskProcessor) Process(ctx context.Context, task *worker.Task) (i
 	}
 
 	return result, resultKey, nil
-}
-
-func findPronunciationAudioURL(loader *config.PronunciationLoader, word string) string {
-	if loader == nil {
-		return ""
-	}
-	target := strings.TrimSpace(word)
-	if target == "" {
-		return ""
-	}
-	for _, u := range loader.GetAll() {
-		for i := range u.Items {
-			if strings.EqualFold(strings.TrimSpace(u.Items[i].Content), target) {
-				return u.Items[i].StandardAudioURL
-			}
-		}
-	}
-	return ""
 }
 
 // ===================== ReportResultPersister =====================

@@ -11,22 +11,16 @@ import (
 func setupReportRoutes(rg *gin.RouterGroup, h *handler.ReportHandler) {
 	report := rg.Group("/report")
 	{
-		// 同步生成学习报告
+		// 固定路径须先于 /:report_id 注册，避免被通配吞掉
 		report.POST("/MVP", h.ReportMVP)
-		// 提交生成学习报告请求
 		report.POST("/submit", h.GenerateReport)
-		report.POST("/generate", h.GenerateReport)
-		// 获取报告详情
-		report.GET("/result/:task_id", h.GetReport)
-		// 获取当前用户的所有报告列表
+		report.POST("/generate", h.GenerateWeeklyReport)
 		report.GET("/list", h.GetReportList)
-		// 获取学习总体统计数据
 		report.GET("/dashboard", h.GetDashboard)
-		// 查询报告生成进度（需放在 /:report_id 之前）
+		report.GET("/result/:task_id", h.GetReport)
 		report.GET("/:report_id/status", h.GetReportStatus)
-		// 周报 JSON 详情
-		report.GET("/:report_id", h.GetReportDetail)
-		// 删除指定学习报告
 		report.DELETE("/:report_id", h.DeleteReport)
+		// 周报详情（主键）；放在最后
+		report.GET("/:report_id", h.GetWeeklyReportDetail)
 	}
 }

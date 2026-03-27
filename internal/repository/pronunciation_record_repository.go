@@ -12,7 +12,7 @@ import (
 type PronunciationRecordRepository interface {
 	Create(ctx context.Context, record *model.PronunciationRecord) error
 	ListBySessionID(ctx context.Context, sessionID string) ([]*model.PronunciationRecord, error)
-	GetBestScorePerItem(ctx context.Context, sessionID string) (map[int]float64, error)
+	GetBestScorePerItem(ctx context.Context, sessionID string) (map[int]float32, error)
 }
 
 type pronunciationRecordRepository struct {
@@ -40,21 +40,21 @@ func (r *pronunciationRecordRepository) ListBySessionID(ctx context.Context, ses
 	return list, nil
 }
 
-func (r *pronunciationRecordRepository) GetBestScorePerItem(ctx context.Context, sessionID string) (map[int]float64, error) {
+func (r *pronunciationRecordRepository) GetBestScorePerItem(ctx context.Context, sessionID string) (map[int]float32, error) {
 	type row struct {
 		ItemID   int     `gorm:"column:item_id"`
-		MaxScore float64 `gorm:"column:max_score"`
+		MaxScore float32 `gorm:"column:max_score"`
 	}
 	var rows []row
 	err := r.db.WithContext(ctx).Raw(`
-		SELECT item_id, MAX(total_score) AS max_score
+		SELECT item_id, MAX(raw_score) AS max_score
 		FROM pronunciation_records
 		WHERE session_id = ?
 		GROUP BY item_id`, sessionID).Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[int]float64, len(rows))
+	out := make(map[int]float32, len(rows))
 	for _, r := range rows {
 		out[r.ItemID] = r.MaxScore
 	}

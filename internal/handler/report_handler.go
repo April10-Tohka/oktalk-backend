@@ -107,6 +107,29 @@ func (h *ReportHandler) GenerateReport(c *gin.Context) {
 	})
 }
 
+// GenerateWeeklyReport POST /api/v1/report/generate
+// 同步生成智能周报（与 POST /submit 异步链路并存）
+func (h *ReportHandler) GenerateWeeklyReport(c *gin.Context) {
+	userID, exists := c.Get(string(middleware.UserIDKey))
+	if !exists {
+		Unauthorized(c)
+		return
+	}
+	data, reportID, err := h.reportService.GenerateWeeklyReport(c.Request.Context(), userID.(string))
+	if err != nil {
+		if errors.Is(err, service.ErrWeeklyReportInsufficient) {
+			BadRequest(c, err.Error())
+			return
+		}
+		InternalError(c, err.Error())
+		return
+	}
+	OK(c, gin.H{
+		"report_id": reportID,
+		"data":      data,
+	})
+}
+
 // GetReportStatus GET /api/v1/report/:report_id/status
 // 查询报告生成进度
 func (h *ReportHandler) GetReportStatus(c *gin.Context) {
@@ -158,19 +181,19 @@ func (h *ReportHandler) GetReportList(c *gin.Context) {
 		Unauthorized(c)
 		return
 	}
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "0"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "0"))
-	items, _, err := h.reportService.GetReportList(c.Request.Context(), userID.(string), page, pageSize)
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "10"))
+	items, total, err := h.reportService.GetReportList(c.Request.Context(), userID.(string), page, pageSize)
 	if err != nil {
 		InternalError(c, err.Error())
 		return
 	}
-	OK(c, gin.H{"reports": items})
+	OKPage(c, items, page, pageSize, total)
 }
 
-// GetReportDetail GET /api/v1/report/:report_id
-// 从数据库 content 返回完整周报 JSON
-func (h *ReportHandler) GetReportDetail(c *gin.Context) {
+// GetWeeklyReportDetail GET /api/v1/report/:report_id
+// 按报告主键返回同步周报 JSON（与 GET /result/:task_id 异步结果区分）
+func (h *ReportHandler) GetWeeklyReportDetail(c *gin.Context) {
 	reportID := c.Param("report_id")
 	if reportID == "" {
 		BadRequest(c, "report_id is required")
@@ -181,20 +204,20 @@ func (h *ReportHandler) GetReportDetail(c *gin.Context) {
 		Unauthorized(c)
 		return
 	}
-	detail, err := h.reportService.GetReportDetail(c.Request.Context(), reportID, userID.(string))
+	data, err := h.reportService.GetWeeklyReportByID(c.Request.Context(), reportID, userID.(string))
 	if err != nil {
-		if errors.Is(err, service.ErrReportNotFound) {
-			NotFound(c, "report not found")
-			return
-		}
-		if errors.Is(err, service.ErrReportAccessDenied) {
+		if errors.Is(err, service.ErrReportForbidden) {
 			Forbidden(c)
 			return
 		}
 		InternalError(c, err.Error())
 		return
 	}
-	OK(c, detail)
+	if data == nil {
+		NotFound(c, "report not found")
+		return
+	}
+	OK(c, data)
 }
 
 // DeleteReport DELETE /api/v1/report/:report_id

@@ -3,22 +3,13 @@ package db
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"sort"
-	"strings"
 	"time"
 
 	"gorm.io/gorm"
 
 	"pronunciation-correction-system/internal/model"
 )
-
-// HardWord 难词统计（周报）
-type HardWord struct {
-	Word  string
-	Count int
-}
 
 // LearningReportRepository 学习报告数据库操作接口
 type LearningReportRepository interface {
@@ -38,24 +29,29 @@ type LearningReportRepository interface {
 	// FindLatestByUserAndPeriod 查询同一用户、同一报告类型、同一周期内最近一次报告
 	// 若不存在返回 nil, nil（不报错）
 	FindLatestByUserAndPeriod(ctx context.Context, userID, reportType string, periodStart, periodEnd time.Time) (*model.LearningReport, error)
-	// UpdateTaskID 更新报告的 TaskID
+	// FindReportByID 按 ID 查询，不存在返回 nil, nil
+	FindReportByID(ctx context.Context, reportID string) (*model.LearningReport, error)
+	// ListLatestByUserID 用户所有 is_latest=true 的报告，按 period_start_date 降序
+	ListLatestByUserID(ctx context.Context, userID string) ([]*model.LearningReport, error)
+	// UpdateContent 更新 content
+	UpdateContent(ctx context.Context, reportID string, content string) error
+	// UpdateIsLatest 同周期（按 period_start_date）旧报告置为非最新
+	UpdateIsLatest(ctx context.Context, userID string, periodStart time.Time, excludeID string) error
+	// UpdateTaskID 更新任务的 TaskID（异步报告）
 	UpdateTaskID(ctx context.Context, reportID string, taskID string) error
 
-	// FindByID 根据 ID 查询，不存在返回 nil, nil
-	FindByID(ctx context.Context, reportID string) (*model.LearningReport, error)
-	// ListByUserID 用户最新报告列表（is_latest=true），按 period_start_date 降序
-	ListByUserID(ctx context.Context, userID string) ([]*model.LearningReport, error)
-	// UpdateContent 更新报告 JSON 内容与任务 ID
-	UpdateContent(ctx context.Context, reportID string, content string, taskID string) error
-	// MarkOldReportsNotLatest 同周期内除 currentID 外置为非最新
-	MarkOldReportsNotLatest(ctx context.Context, userID, reportType string, periodStart time.Time, currentID string) error
-
-	// ---- 周报统计（Worker）----
+	// CountEvaluations 本周有效发音评测次数（pronunciation_records, is_rejected=false）
 	CountEvaluations(ctx context.Context, userID string, start, end time.Time) (int, error)
+	// CountConversations 本周场景对话消息条数
 	CountConversations(ctx context.Context, userID string, start, end time.Time) (int, error)
+	// CountPersistenceDays 两表 created_at 日期并集天数
 	CountPersistenceDays(ctx context.Context, userID string, start, end time.Time) (int, error)
-	GetRadarScores(ctx context.Context, userID string, start, end time.Time) (avgRaw, avgFluency, avgIntegrity float32, err error)
-	GetHardWords(ctx context.Context, userID string, start, end time.Time) ([]HardWord, error)
+	// GetAvgScores 四维原始分 AVG（0-5）
+	GetAvgScores(ctx context.Context, userID string, start, end time.Time) (accuracy, fluency, integrity, standard float64, err error)
+	// GetProblemWordsList problem_words JSON 原始字符串列表
+	GetProblemWordsList(ctx context.Context, userID string, start, end time.Time) ([]string, error)
+	// GetSceneStats passRate 百分制整数，completedScenes 完成场景数
+	GetSceneStats(ctx context.Context, userID string, start, end time.Time) (passRate int, completedScenes int, err error)
 
 	// 统计方法
 	Count(ctx context.Context) (int64, error)
@@ -293,8 +289,8 @@ func (r *learningReportRepository) GetWithUser(ctx context.Context, id string) (
 	return &report, nil
 }
 
-// FindByID 根据 ID 查询，不存在返回 nil, nil
-func (r *learningReportRepository) FindByID(ctx context.Context, reportID string) (*model.LearningReport, error) {
+// FindReportByID 按 ID 查询，不存在返回 nil, nil
+func (r *learningReportRepository) FindReportByID(ctx context.Context, reportID string) (*model.LearningReport, error) {
 	var report model.LearningReport
 	err := r.db.WithContext(ctx).Where("id = ?", reportID).First(&report).Error
 	if err != nil {
@@ -306,49 +302,46 @@ func (r *learningReportRepository) FindByID(ctx context.Context, reportID string
 	return &report, nil
 }
 
-// ListByUserID 查询 is_latest=true 的报告
-func (r *learningReportRepository) ListByUserID(ctx context.Context, userID string) ([]*model.LearningReport, error) {
+// ListLatestByUserID 查询用户 is_latest=true 的报告
+func (r *learningReportRepository) ListLatestByUserID(ctx context.Context, userID string) ([]*model.LearningReport, error) {
 	var list []*model.LearningReport
 	err := r.db.WithContext(ctx).
 		Where("user_id = ? AND is_latest = ?", userID, true).
 		Order("period_start_date DESC").
 		Find(&list).Error
 	if err != nil {
-		return nil, WrapDBError(err, "list learning reports by user")
+		return nil, WrapDBError(err, "list latest learning reports")
 	}
 	return list, nil
 }
 
-// UpdateContent 更新 content 与 task_id
-func (r *learningReportRepository) UpdateContent(ctx context.Context, reportID string, content string, taskID string) error {
+// UpdateContent 更新 content
+func (r *learningReportRepository) UpdateContent(ctx context.Context, reportID string, content string) error {
 	err := r.db.WithContext(ctx).Model(&model.LearningReport{}).
 		Where("id = ?", reportID).
-		Updates(map[string]interface{}{
-			"content": content,
-			"task_id": taskID,
-		}).Error
+		Update("content", content).Error
 	return WrapDBError(err, "update learning report content")
 }
 
-// MarkOldReportsNotLatest 同周期旧报告置为非最新
-func (r *learningReportRepository) MarkOldReportsNotLatest(ctx context.Context, userID, reportType string, periodStart time.Time, currentID string) error {
+// UpdateIsLatest 同周期其他周报置为非最新
+func (r *learningReportRepository) UpdateIsLatest(ctx context.Context, userID string, periodStart time.Time, excludeID string) error {
 	err := r.db.WithContext(ctx).Model(&model.LearningReport{}).
-		Where("user_id = ? AND report_type = ? AND period_start_date = ? AND id != ?",
-			userID, reportType, periodStart, currentID).
+		Where("user_id = ? AND report_type = ? AND DATE(period_start_date) = DATE(?) AND id != ?",
+			userID, "weekly", periodStart, excludeID).
 		Update("is_latest", false).Error
-	return WrapDBError(err, "mark old reports not latest")
+	return WrapDBError(err, "update learning report is_latest")
 }
 
-// CountEvaluations 统计 pronunciation_records 条数
+// CountEvaluations 有效发音评测次数
 func (r *learningReportRepository) CountEvaluations(ctx context.Context, userID string, start, end time.Time) (int, error) {
 	var n int64
 	err := r.db.WithContext(ctx).Model(&model.PronunciationRecord{}).
-		Where("user_id = ? AND created_at >= ? AND created_at <= ?", userID, start, end).
+		Where("user_id = ? AND is_rejected = ? AND created_at >= ? AND created_at <= ?", userID, false, start, end).
 		Count(&n).Error
 	return int(n), WrapDBError(err, "count evaluations")
 }
 
-// CountConversations 统计 scene_messages 条数
+// CountConversations 场景消息条数
 func (r *learningReportRepository) CountConversations(ctx context.Context, userID string, start, end time.Time) (int, error) {
 	var n int64
 	err := r.db.WithContext(ctx).Model(&model.SceneMessage{}).
@@ -357,86 +350,106 @@ func (r *learningReportRepository) CountConversations(ctx context.Context, userI
 	return int(n), WrapDBError(err, "count scene messages")
 }
 
-// CountPersistenceDays 两表练习日期并集天数
+// CountPersistenceDays 两表日期并集天数
 func (r *learningReportRepository) CountPersistenceDays(ctx context.Context, userID string, start, end time.Time) (int, error) {
-	var n int64
-	sql := `
-SELECT COUNT(DISTINCT d) FROM (
-  SELECT DATE(created_at) AS d FROM pronunciation_records
-    WHERE user_id = ? AND created_at >= ? AND created_at <= ?
-  UNION
-  SELECT DATE(created_at) AS d FROM scene_messages
-    WHERE user_id = ? AND created_at >= ? AND created_at <= ?
-) t`
-	err := r.db.WithContext(ctx).Raw(sql, userID, start, end, userID, start, end).Scan(&n).Error
-	return int(n), WrapDBError(err, "count persistence days")
-}
-
-// GetRadarScores 发音记录三项均值
-func (r *learningReportRepository) GetRadarScores(ctx context.Context, userID string, start, end time.Time) (avgRaw, avgFluency, avgIntegrity float32, err error) {
-	var row struct {
-		AvgRaw       float64 `gorm:"column:avg_raw"`
-		AvgFluency   float64 `gorm:"column:avg_fluency"`
-		AvgIntegrity float64 `gorm:"column:avg_integrity"`
+	type row struct {
+		N int `gorm:"column:n"`
 	}
-	err = r.db.WithContext(ctx).Raw(`
-		SELECT
-			COALESCE(AVG(total_score), 0) AS avg_raw,
-			COALESCE(AVG(fluency_score), 0) AS avg_fluency,
-			COALESCE(AVG(integrity_score), 0) AS avg_integrity
-		FROM pronunciation_records
-		WHERE user_id = ? AND created_at >= ? AND created_at <= ?`,
-		userID, start, end).Scan(&row).Error
+	var out row
+	err := r.db.WithContext(ctx).Raw(`
+		SELECT COUNT(DISTINCT d) AS n FROM (
+			SELECT DATE(created_at) AS d FROM pronunciation_records
+			WHERE user_id = ? AND created_at >= ? AND created_at <= ?
+			UNION
+			SELECT DATE(created_at) AS d FROM scene_messages
+			WHERE user_id = ? AND created_at >= ? AND created_at <= ?
+		) t`,
+		userID, start, end, userID, start, end).Scan(&out).Error
 	if err != nil {
-		return 0, 0, 0, WrapDBError(err, "get radar scores")
+		return 0, WrapDBError(err, "count persistence days")
 	}
-	return float32(row.AvgRaw), float32(row.AvgFluency), float32(row.AvgIntegrity), nil
+	return out.N, nil
 }
 
-// GetHardWords 本周难词 Top4
-func (r *learningReportRepository) GetHardWords(ctx context.Context, userID string, start, end time.Time) ([]HardWord, error) {
+// GetAvgScores 四维平均分（原始 0-5）
+func (r *learningReportRepository) GetAvgScores(ctx context.Context, userID string, start, end time.Time) (float64, float64, float64, float64, error) {
+	type agg struct {
+		AvgA float64 `gorm:"column:avg_a"`
+		AvgF float64 `gorm:"column:avg_f"`
+		AvgI float64 `gorm:"column:avg_i"`
+		AvgS float64 `gorm:"column:avg_s"`
+	}
+	var a agg
+	err := r.db.WithContext(ctx).Raw(`
+		SELECT
+			COALESCE(AVG(accuracy_score), 0) AS avg_a,
+			COALESCE(AVG(fluency), 0) AS avg_f,
+			COALESCE(AVG(integrity), 0) AS avg_i,
+			COALESCE(AVG(standard_score), 0) AS avg_s
+		FROM pronunciation_records
+		WHERE user_id = ? AND is_rejected = false AND created_at >= ? AND created_at <= ?`,
+		userID, start, end).Scan(&a).Error
+	if err != nil {
+		return 0, 0, 0, 0, WrapDBError(err, "get avg scores")
+	}
+	return a.AvgA, a.AvgF, a.AvgI, a.AvgS, nil
+}
+
+// GetProblemWordsList 拉取 problem_words 列原始 JSON 字符串
+func (r *learningReportRepository) GetProblemWordsList(ctx context.Context, userID string, start, end time.Time) ([]string, error) {
 	var rows []struct {
 		PW string `gorm:"column:problem_words"`
 	}
-	err := r.db.WithContext(ctx).Model(&model.PronunciationRecord{}).
-		Select("problem_words").
-		Where("user_id = ? AND created_at >= ? AND created_at <= ? AND problem_words IS NOT NULL AND problem_words != '' AND problem_words != 'null'",
-			userID, start, end).
-		Find(&rows).Error
+	err := r.db.WithContext(ctx).Raw(`
+		SELECT problem_words FROM pronunciation_records
+		WHERE user_id = ? AND is_rejected = false
+		  AND created_at >= ? AND created_at <= ?
+		  AND problem_words IS NOT NULL AND problem_words != '' AND problem_words != 'null'`,
+		userID, start, end).Scan(&rows).Error
 	if err != nil {
-		return nil, WrapDBError(err, "get hard words rows")
+		return nil, WrapDBError(err, "get problem words list")
 	}
-	freq := make(map[string]int)
+	out := make([]string, 0, len(rows))
 	for _, row := range rows {
-		var words []string
-		if err := json.Unmarshal([]byte(row.PW), &words); err != nil {
-			continue
+		if row.PW != "" {
+			out = append(out, row.PW)
 		}
-		for _, w := range words {
-			w = strings.TrimSpace(strings.ToLower(w))
-			if w == "" {
-				continue
-			}
-			freq[w]++
-		}
-	}
-	type pair struct {
-		w string
-		c int
-	}
-	var plist []pair
-	for w, c := range freq {
-		plist = append(plist, pair{w, c})
-	}
-	sort.Slice(plist, func(i, j int) bool {
-		if plist[i].c == plist[j].c {
-			return plist[i].w < plist[j].w
-		}
-		return plist[i].c > plist[j].c
-	})
-	out := make([]HardWord, 0, 4)
-	for i := 0; i < len(plist) && i < 4; i++ {
-		out = append(out, HardWord{Word: plist[i].w, Count: plist[i].c})
 	}
 	return out, nil
+}
+
+// GetSceneStats 一次通过率与完成场景数
+func (r *learningReportRepository) GetSceneStats(ctx context.Context, userID string, start, end time.Time) (int, int, error) {
+	type cntRow struct {
+		Pass1 int `gorm:"column:pass1"`
+		Total int `gorm:"column:total"`
+	}
+	var cr cntRow
+	err := r.db.WithContext(ctx).Raw(`
+		SELECT
+			COALESCE(SUM(CASE WHEN match_result IN ('rule_pass','llm_pass') AND attempt = 1 THEN 1 ELSE 0 END), 0) AS pass1,
+			COUNT(*) AS total
+		FROM scene_messages
+		WHERE user_id = ? AND created_at >= ? AND created_at <= ?`,
+		userID, start, end).Scan(&cr).Error
+	if err != nil {
+		return 0, 0, WrapDBError(err, "scene pass stats")
+	}
+	passRate := 0
+	if cr.Total > 0 {
+		passRate = int(float64(cr.Pass1) * 100.0 / float64(cr.Total))
+		if passRate > 100 {
+			passRate = 100
+		}
+	}
+
+	var completed int64
+	err = r.db.WithContext(ctx).Model(&model.SceneSession{}).
+		Where("user_id = ? AND status = ? AND created_at >= ? AND created_at <= ?",
+			userID, "completed", start, end).
+		Count(&completed).Error
+	if err != nil {
+		return 0, 0, WrapDBError(err, "count completed scenes")
+	}
+	return passRate, int(completed), nil
 }
