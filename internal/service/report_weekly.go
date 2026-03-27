@@ -36,43 +36,51 @@ func (s *reportServiceImpl) GenerateWeeklyReport(ctx context.Context, userID str
 	weekStart := time.Date(now.Year(), now.Month(), now.Day()-weekday+1, 0, 0, 0, 0, loc)
 	weekEnd := weekStart.AddDate(0, 0, 7).Add(-time.Nanosecond)
 
+	// 统计本周有效发音评测次数
 	evalCount, err := s.repos.LearningReport.CountEvaluations(ctx, userID, weekStart, weekEnd)
 	if err != nil {
 		return nil, "", err
 	}
+	// 统计本周场景对话次数
 	convCount, err := s.repos.LearningReport.CountConversations(ctx, userID, weekStart, weekEnd)
 	if err != nil {
 		return nil, "", err
 	}
+	// 如果本周有效发音评测次数和场景对话次数之和小于 3，则返回错误
 	if evalCount+convCount < 3 {
 		return nil, "", ErrWeeklyReportInsufficient
 	}
 
+	// 查找本周最新周报
 	existing, err := s.repos.LearningReport.FindLatestByUserAndPeriod(ctx, userID, "weekly", weekStart, weekEnd)
 	if err != nil {
 		return nil, "", err
 	}
+	// 如果本周最新周报存在且内容不为空且创建时间距现在小于 2 小时，则返回本周最新周报
 	if existing != nil && existing.Content != "" && time.Since(existing.CreatedAt) < 2*time.Hour {
 		var data WeeklyReportData
 		if err := json.Unmarshal([]byte(existing.Content), &data); err == nil {
-			return &data, existing.ID, nil
+			return &data, existing.ID, nil // 返回本周最新周报
 		}
 	}
-
+	// 统计本周坚持学习天数
 	persistDays, err := s.repos.LearningReport.CountPersistenceDays(ctx, userID, weekStart, weekEnd)
 	if err != nil {
 		return nil, "", err
 	}
+	// 统计本周发音评测次数、场景对话次数和坚持学习天数
 	activity := ReportActivity{
 		EvaluationCount:   evalCount,
 		ConversationCount: convCount,
 		PersistenceDays:   persistDays,
 	}
 
+	// 计算本周发音评测的平均准确度、流利度、完整度和标准度
 	avgA, avgF, avgI, avgS, err := s.repos.LearningReport.GetAvgScores(ctx, userID, weekStart, weekEnd)
 	if err != nil {
 		return nil, "", err
 	}
+	// 构建雷达图
 	radar := ReportRadar{
 		AccuracyScore:  scoreToPercent(avgA),
 		FluencyScore:   scoreToPercent(avgF),
@@ -80,38 +88,47 @@ func (s *reportServiceImpl) GenerateWeeklyReport(ctx context.Context, userID str
 		StandardScore:  scoreToPercent(avgS),
 	}
 
+	// 获取本周高频难词
 	rawList, err := s.repos.LearningReport.GetProblemWordsList(ctx, userID, weekStart, weekEnd)
 	if err != nil {
 		return nil, "", err
 	}
 	hardWords := buildHardWordsTop4(rawList, s.pronunciationLoader)
 
+	// 获取本周场景对话的一次通过率与完成场景数
 	passRate, completed, err := s.repos.LearningReport.GetSceneStats(ctx, userID, weekStart, weekEnd)
 	if err != nil {
 		return nil, "", err
 	}
+	// 构建场景对话表现
 	scene := ReportScene{PassRate: passRate, CompletedScenes: completed}
 
+	// 生成本周鼓励语
 	encourage := s.llmWeeklyEncourage(ctx, activity, radar.AccuracyScore)
+	// 生成本周完整报告
 	full := s.llmWeeklyFull(ctx, weekStart, weekEnd, activity, radar, scene, hardWords)
 
+	// 构建周报数据
 	data := WeeklyReportData{
-		WeekStart: weekStart.Format("2006-01-02"),
-		WeekEnd:   weekEnd.Format("2006-01-02"),
-		Activity:  activity,
-		Radar:     radar,
-		HardWords: hardWords,
-		Scene:     scene,
-		Encourage: encourage,
+		WeekStart:  weekStart.Format("2006-01-02"),
+		WeekEnd:    weekEnd.Format("2006-01-02"),
+		Activity:   activity,
+		Radar:      radar,
+		HardWords:  hardWords,
+		Scene:      scene,
+		Encourage:  encourage,
 		FullReport: full,
 	}
 
+	// 将周报数据序列化为 JSON
 	contentJSON, err := json.Marshal(data)
 	if err != nil {
 		return nil, "", err
 	}
 
+	// 生成新的报告 ID
 	reportID := uuid.New()
+	// 创建新的周报记录
 	rep := &model.LearningReport{
 		ID:              reportID,
 		UserID:          userID,
@@ -121,13 +138,14 @@ func (s *reportServiceImpl) GenerateWeeklyReport(ctx context.Context, userID str
 		Content:         string(contentJSON),
 		IsLatest:        true,
 	}
+	// 将周报记录保存到数据库
 	if err := s.repos.LearningReport.Create(ctx, rep); err != nil {
 		return nil, "", err
 	}
 	if err := s.repos.LearningReport.UpdateIsLatest(ctx, userID, weekStart, reportID); err != nil {
 		s.logger.Warn("weekly report UpdateIsLatest failed", slog.String("error", err.Error()))
 	}
-
+	// 返回周报数据和报告 ID
 	return &data, reportID, nil
 }
 
