@@ -195,7 +195,7 @@ type AIFeedbackBlock struct {
 	Encourage  string `json:"encourage"`
 	ProblemTip string `json:"problem_tip"`
 	Suggestion string `json:"suggestion"`
-	AudioURL   string `json:"audio_url"`
+	AiAudioURL   string `json:"ai_audio_url"`
 }
 
 // PronunciationEvaluateResponse 评测响应
@@ -203,6 +203,7 @@ type PronunciationEvaluateResponse struct {
 	SessionID        string          `json:"session_id"`
 	ItemID           int             `json:"item_id"`
 	Content          string          `json:"content"`
+	UserAudioURL     string          `json:"user_audio_url"`
 	Evaluation       EvaluationBlock `json:"evaluation"`
 	AIFeedback       AIFeedbackBlock `json:"ai_feedback"`
 	RecommendAdvance bool            `json:"recommend_advance"`
@@ -335,6 +336,7 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 		SessionID: req.SessionID,
 		ItemID:    req.ItemID,
 		Content:   item.Content,
+		UserAudioURL: userAudioURL,
 		Evaluation: EvaluationBlock{
 			RawScore:     rawScore,
 			Stars:        stars,
@@ -344,7 +346,7 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 			Encourage:  llmOut.Encourage,
 			ProblemTip: llmOut.ProblemTip,
 			Suggestion: llmOut.Suggestion,
-			AudioURL:   aiAudioURL,
+			AiAudioURL:   aiAudioURL,
 		},
 		RecommendAdvance: recommend,
 	}, nil
