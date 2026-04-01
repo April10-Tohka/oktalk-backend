@@ -8,17 +8,17 @@
     {
       "id": 1,
       "content": "dog",
-      "standard_audio_url": "https://oss.example.com/pronunciation/standard/dog.mp3"
+      "standard_audio_url": "https://oktalk.oss-cn-heyuan.aliyuncs.com/pronunciation/2bc81800-95d1-4013-ab3b-fc3d430f757a/1_1824c581-0b9a-47ac-b4ba-8c64a6359fce.wav"
     },
     {
       "id": 2,
       "content": "cat",
-      "standard_audio_url": "https://oss.example.com/pronunciation/standard/cat.mp3"
+      "standard_audio_url": "https://oktalk.oss-cn-heyuan.aliyuncs.com/pronunciation/2bc81800-95d1-4013-ab3b-fc3d430f757a/1_1824c581-0b9a-47ac-b4ba-8c64a6359fce.wav"
     },
     {
       "id": 3,
       "content": "rabbit",
-      "standard_audio_url": "https://oss.example.com/pronunciation/standard/rabbit.mp3"
+      "standard_audio_url": "https://oktalk.oss-cn-heyuan.aliyuncs.com/pronunciation/2bc81800-95d1-4013-ab3b-fc3d430f757a/1_1824c581-0b9a-47ac-b4ba-8c64a6359fce.wav"
     }
   ]
 }

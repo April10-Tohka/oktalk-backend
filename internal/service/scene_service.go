@@ -201,6 +201,7 @@ type SubmitAnswerRequest struct {
 // SubmitAnswerResponse 提交回答响应
 type SubmitAnswerResponse struct {
 	UserText             string `json:"user_text"`
+	UserAudioURL         string `json:"user_audio_url"`
 	MatchResult          string `json:"match_result"`
 	AIReplyText          string `json:"ai_reply_text"`
 	AIAudioURL           string `json:"ai_audio_url"`
@@ -266,13 +267,17 @@ func (s *SceneService) SubmitAnswer(ctx context.Context, req *SubmitAnswerReques
 		return nil, errHTTP(400, "音频为空，请重新录音")
 	}
 
+	userAudioURL := ""
 	userAudioKey := fmt.Sprintf("scene/%s/user_%s.wav", req.SessionID, uuid.New())
 	go func(data []byte, key string) {
 		ctx2, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		if _, err := s.ossProvider.UploadAudio(ctx2, key, data); err != nil {
+		if url, err := s.ossProvider.UploadAudio(ctx2, key, data); err != nil {
 			s.logger.Warn("scene user audio upload failed", slog.String("error", err.Error()))
+		}else{
+			userAudioURL = url
 		}
+		
 	}(append([]byte(nil), req.AudioData...), userAudioKey)
 
 	userTextLower := strings.ToLower(userText)
@@ -383,6 +388,7 @@ func (s *SceneService) SubmitAnswer(ctx context.Context, req *SubmitAnswerReques
 
 	return &SubmitAnswerResponse{
 		UserText:             userText,
+		UserAudioURL: userAudioURL,
 		MatchResult:          matchResult,
 		AIReplyText:          reply.Reply,
 		AIAudioURL:           aiAudioURL,
