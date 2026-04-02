@@ -82,6 +82,7 @@ func (a *XFEvaluationAdapter) Assess(ctx context.Context, text string, audioData
 		return nil, fmt.Errorf("receive result: %w", err)
 	}
 	logger.InfoContext(ctx, "xf ise receive result successfully")
+	logger.InfoContext(ctx, "xf ise xml result", "xml", string(resultXML))
 	// 5. 解析 XML 评测结果
 	result, err := a.parseXMLResult(resultXML)
 	if err != nil {
