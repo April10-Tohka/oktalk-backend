@@ -1,31 +1,46 @@
 {
   "id": "greeting",
-  "title": "Greeting",
-  "description": "Learn how to say hello and goodbye",
+  "title": "打招呼",
+  "description": "学习如何说你好和再见",
   "cover_emoji": "👋",
   "steps": [
     {
       "id": 1,
       "question": "What do you say in the morning?",
       "question_audio_text": "What do you say in the morning?",
-      "expected": ["good morning"],
-      "hints": ["Good morning", "Morning"],
+      "expected": [
+        "good morning"
+      ],
+      "hints": [
+        "Good morning",
+        "Morning"
+      ],
       "teach": "In the morning, we say: Good morning!"
     },
     {
       "id": 2,
       "question": "What do you say in the evening?",
       "question_audio_text": "What do you say in the evening?",
-      "expected": ["good evening"],
-      "hints": ["Good evening"],
+      "expected": [
+        "good evening"
+      ],
+      "hints": [
+        "Good evening"
+      ],
       "teach": "In the evening, we say: Good evening!"
     },
     {
       "id": 3,
       "question": "How do you say goodbye?",
       "question_audio_text": "How do you say goodbye?",
-      "expected": ["goodbye", "bye"],
-      "hints": ["Goodbye", "Bye bye"],
+      "expected": [
+        "goodbye",
+        "bye"
+      ],
+      "hints": [
+        "Goodbye",
+        "Bye bye"
+      ],
       "teach": "When leaving, we say: Goodbye!"
     }
   ],

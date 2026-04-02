@@ -1,31 +1,51 @@
 {
   "id": "self_introduction",
-  "title": "Self Introduction",
-  "description": "Learn how to introduce yourself",
+  "title": "自我介绍",
+  "description": "学习如何介绍自己",
   "cover_emoji": "🙋",
   "steps": [
     {
       "id": 1,
       "question": "What is your name?",
       "question_audio_text": "What is your name?",
-      "expected": ["my name is", "i am", "i'm"],
-      "hints": ["My name is...", "I am..."],
+      "expected": [
+        "my name is",
+        "i am",
+        "i'm"
+      ],
+      "hints": [
+        "My name is...",
+        "I am..."
+      ],
       "teach": "You can say: My name is [your name]!"
     },
     {
       "id": 2,
       "question": "How old are you?",
       "question_audio_text": "How old are you?",
-      "expected": ["i am", "i'm", "years old"],
-      "hints": ["I am ... years old"],
+      "expected": [
+        "i am",
+        "i'm",
+        "years old"
+      ],
+      "hints": [
+        "I am ... years old"
+      ],
       "teach": "You can say: I am [number] years old!"
     },
     {
       "id": 3,
       "question": "Where are you from?",
       "question_audio_text": "Where are you from?",
-      "expected": ["i am from", "i'm from", "from"],
-      "hints": ["I am from...", "I'm from..."],
+      "expected": [
+        "i am from",
+        "i'm from",
+        "from"
+      ],
+      "hints": [
+        "I am from...",
+        "I'm from..."
+      ],
       "teach": "You can say: I am from [city or country]!"
     }
   ],

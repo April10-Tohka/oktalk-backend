@@ -1,31 +1,53 @@
 {
   "id": "ordering_food",
-  "title": "Ordering Food",
-  "description": "Learn how to order food at a restaurant",
+  "title": "点餐",
+  "description": "学习如何在餐厅点餐",
   "cover_emoji": "🍔",
   "steps": [
     {
       "id": 1,
       "question": "How do you ask for a menu?",
       "question_audio_text": "How do you ask for a menu?",
-      "expected": ["menu", "can i have", "may i have"],
-      "hints": ["Can I have the menu?", "Menu please"],
+      "expected": [
+        "menu",
+        "can i have",
+        "may i have"
+      ],
+      "hints": [
+        "Can I have the menu?",
+        "Menu please"
+      ],
       "teach": "You can say: Can I have the menu, please?"
     },
     {
       "id": 2,
       "question": "How do you order a burger?",
       "question_audio_text": "How do you order a burger?",
-      "expected": ["burger", "i want", "i would like", "can i have"],
-      "hints": ["I want a burger", "I would like a burger"],
+      "expected": [
+        "burger",
+        "i want",
+        "i would like",
+        "can i have"
+      ],
+      "hints": [
+        "I want a burger",
+        "I would like a burger"
+      ],
       "teach": "You can say: I would like a burger, please!"
     },
     {
       "id": 3,
       "question": "How do you ask for the bill?",
       "question_audio_text": "How do you ask for the bill?",
-      "expected": ["bill", "check", "pay"],
-      "hints": ["Can I have the bill?", "Check please"],
+      "expected": [
+        "bill",
+        "check",
+        "pay"
+      ],
+      "hints": [
+        "Can I have the bill?",
+        "Check please"
+      ],
       "teach": "You can say: Can I have the bill, please?"
     }
   ],
