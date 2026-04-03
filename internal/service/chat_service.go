@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"pronunciation-correction-system/internal/db"
 	"pronunciation-correction-system/internal/domain"
 	domainLimiter "pronunciation-correction-system/internal/domain"
+	"pronunciation-correction-system/internal/infrastructure/vad/vadpb"
 	"pronunciation-correction-system/internal/model"
 	"pronunciation-correction-system/internal/pkg/logger"
 	"pronunciation-correction-system/internal/pkg/uuid"
@@ -186,6 +188,8 @@ type chatServiceImpl struct {
 	llmProvider      domain.LLMProvider
 	ttsProvider      domain.TTSProvider
 	ossProvider      domain.OSSProvider
+	// vadClient VAD gRPC 客户端，由 NewChatService 注入；HandleFreetalk 透传给 Session
+	vadClient        vadpb.VADServiceClient
 	taskCache        *cache.TaskCache
 	chatCache        *cache.ChatCache
 	workerManager    *worker.Manager
@@ -200,6 +204,7 @@ func NewChatService(
 	llm domain.LLMProvider,
 	tts domain.TTSProvider,
 	oss domain.OSSProvider,
+	vadClient vadpb.VADServiceClient,
 	taskCache *cache.TaskCache,
 	chatCache *cache.ChatCache,
 	workerMgr *worker.Manager,
@@ -219,6 +224,7 @@ func NewChatService(
 		llmProvider:      llm,
 		ttsProvider:      tts,
 		ossProvider:      oss,
+		vadClient:        vadClient,
 		taskCache:        taskCache,
 		chatCache:        chatCache,
 		workerManager:    workerMgr,
@@ -757,6 +763,8 @@ func (s *chatServiceImpl) HandleFreetalk(ctx context.Context, req *HandleFreetal
 	_ = s.conversationRepo.UpdateStatus(ctx, req.ConversationID, "active")
 
 	// 2. 创建并启动 Session
+	// vadClient 由调用方（Handler 层）通过 chatServiceImpl.vadClient 注入，
+	// 此处透传给 Session。
 	session := NewSession(
 		req.Conn,
 		s.asrProvider,
@@ -766,6 +774,7 @@ func (s *chatServiceImpl) HandleFreetalk(ctx context.Context, req *HandleFreetal
 		s.messageRepo,
 		req.ConversationID,
 		req.UserID,
+		s.vadClient,
 	)
 	go session.Run()
 	return nil
@@ -1166,6 +1175,9 @@ type Session struct {
 	llmProvider domain.LLMProvider
 	ttsProvider domain.TTSProvider
 
+	// VAD gRPC 客户端（可为 nil，nil 时跳过 VAD 直接送 ASR）
+	vadClient vadpb.VADServiceClient
+
 	// 状态机
 	state   sessionState
 	stateMu sync.Mutex
@@ -1190,6 +1202,7 @@ func NewSession(
 	messageRepo db.ConversationMessageRepository,
 	conversationID string,
 	userID string,
+	vadClient vadpb.VADServiceClient,
 ) *Session {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Session{
@@ -1201,6 +1214,7 @@ func NewSession(
 		messageRepo:      messageRepo,
 		conversationID:   conversationID,
 		userID:           userID,
+		vadClient:        vadClient,
 		ctx:              ctx,
 		cancel:           cancel,
 		state:            stateIdle,
@@ -1208,17 +1222,32 @@ func NewSession(
 }
 
 func (s *Session) Run() error {
-	audioChan := make(chan []byte, 1024)              // App音频 → ASR goroutine（转发PCM给ASR）
+	rawAudioChan := make(chan []byte, 1024)           // App音频 → vadSendGoroutine
+	asrAudioChan := make(chan []byte, 8)              // vadRecvGoroutine → asrGoroutine（完整句子PCM）
 	llmInputChan := make(chan string, 1024)           // ASR goroutine → LLM goroutine（触发LLM，携带识别文本）
 	llmOutputChan := make(chan domain.LLMChunk, 1024) // LLM goroutine → TTS goroutine（流式token投喂TTS）
 	writeChan := make(chan wsMessage, 1024)           // 所有goroutine → Writer goroutine（统一写App WebSocket）
 	ttsNewTurnChan := make(chan struct{}, 1024)       // ASR goroutine → TTS goroutine（触发新一轮TTS任务）
 
-	go s.readerGoroutine(audioChan)
+	// 建立 VAD gRPC 双向流
+	vadStream, err := s.vadClient.StreamingVAD(s.ctx)
+	if err != nil {
+		slog.Error("[FreeTalk] Connect VAD gRPC stream failed",
+			"error", err,
+			"conversation_id", s.conversationID,
+		)
+		return err
+	}
+
+	go s.readerGoroutine(rawAudioChan)
 	go s.writerGoroutine(writeChan)
-	go s.asrGoroutine(audioChan, llmInputChan, ttsNewTurnChan)
+	go s.vadSendGoroutine(vadStream, rawAudioChan)
+	go s.vadRecvGoroutine(vadStream, asrAudioChan, writeChan)
+	go s.asrGoroutine(asrAudioChan, llmInputChan, ttsNewTurnChan)
 	go s.llmGoroutine(llmInputChan, llmOutputChan, writeChan)
 	go s.ttsGoroutine(llmOutputChan, ttsNewTurnChan, writeChan)
+
+	<-s.ctx.Done()
 	return nil
 }
 
@@ -1282,6 +1311,74 @@ func (s *Session) readerGoroutine(audioChan chan<- []byte) {
 				"type", messageType,
 				"conversation_id", s.conversationID,
 			)
+		}
+	}
+}
+
+// ===================== ② VAD Goroutines =====================
+
+// vadSendGoroutine 从 rawAudioChan 读取原始 PCM 帧并转发给 VAD gRPC 服务
+func (s *Session) vadSendGoroutine(stream vadpb.VADService_StreamingVADClient, rawAudioChan <-chan []byte) {
+	defer stream.CloseSend()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case audio, ok := <-rawAudioChan:
+			if !ok {
+				return
+			}
+			if err := stream.Send(&vadpb.AudioChunk{
+				PcmData:    audio,
+				SampleRate: 16000,
+			}); err != nil {
+				slog.Error("[FreeTalk] VAD stream send failed",
+					"error", err,
+					"conversation_id", s.conversationID,
+				)
+				s.cancel()
+				return
+			}
+		}
+	}
+}
+
+// vadRecvGoroutine 从 VAD gRPC 服务接收事件，分发到 writeChan / asrAudioChan
+func (s *Session) vadRecvGoroutine(stream vadpb.VADService_StreamingVADClient, asrAudioChan chan<- []byte, writeChan chan<- wsMessage) {
+	for {
+		event, err := stream.Recv()
+		if err != nil {
+			if err == io.EOF || s.ctx.Err() != nil {
+				// 正常退出：流关闭或 ctx 已取消
+				return
+			}
+			slog.Error("[FreeTalk] VAD stream recv failed",
+				"error", err,
+				"conversation_id", s.conversationID,
+			)
+			s.cancel()
+			return
+		}
+
+		switch event.Type {
+		case vadpb.VADEvent_SPEECH_START:
+			// 通知 App 前端：用户开始说话
+			data, _ := json.Marshal(map[string]string{"type": "listening"})
+			select {
+			case writeChan <- wsMessage{messageType: websocket.TextMessage, data: data}:
+			case <-s.ctx.Done():
+				return
+			}
+
+		case vadpb.VADEvent_SPEECH_END:
+			// 把完整句子 PCM 送给 ASR goroutine
+			if len(event.AudioData) > 0 {
+				select {
+				case asrAudioChan <- event.AudioData:
+				case <-s.ctx.Done():
+					return
+				}
+			}
 		}
 	}
 }

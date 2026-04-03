@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package vad;
+
+option go_package = "internal/infrastructure/vad/vadpb";
+
+// protoc 生成命令（在项目根目录执行）:
+// protoc --go_out=. --go-grpc_out=. proto/vad.proto
+
+service VADService {
+  rpc StreamingVAD(stream AudioChunk) returns (stream VADEvent);
+}
+
+message AudioChunk {
+  bytes pcm_data    = 1;
+  int32 sample_rate = 2;
+}
+
+message VADEvent {
+  enum EventType {
+    SPEECH_START = 0;
+    SPEECH_END   = 1;
+  }
+  EventType type   = 1;
+  bytes audio_data = 2; // 仅 SPEECH_END 时有值，完整句子 PCM
+}

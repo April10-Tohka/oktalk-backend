@@ -18,7 +18,6 @@ import (
 	"pronunciation-correction-system/internal/domain"
 	"pronunciation-correction-system/internal/handler"
 	"pronunciation-correction-system/internal/handler/freetalk"
-	"pronunciation-correction-system/internal/repository"
 	infraASR "pronunciation-correction-system/internal/infrastructure/asr/aliyun"
 	infraXF "pronunciation-correction-system/internal/infrastructure/evalution/xf"
 	infraLLM "pronunciation-correction-system/internal/infrastructure/llm/qwen"
@@ -26,9 +25,12 @@ import (
 	infraRL "pronunciation-correction-system/internal/infrastructure/ratelimit"
 	infraSMS "pronunciation-correction-system/internal/infrastructure/sms"
 	infraTTS "pronunciation-correction-system/internal/infrastructure/tts/aliyun"
+	infraVAD "pronunciation-correction-system/internal/infrastructure/vad"
+	"pronunciation-correction-system/internal/infrastructure/vad/vadpb"
 	infraWechat "pronunciation-correction-system/internal/infrastructure/wechat"
 	pkgjwt "pronunciation-correction-system/internal/pkg/jwt"
 	"pronunciation-correction-system/internal/pkg/logger"
+	"pronunciation-correction-system/internal/repository"
 	"pronunciation-correction-system/internal/service"
 	"pronunciation-correction-system/internal/worker"
 )
@@ -67,6 +69,8 @@ type App struct {
 	OSSProvider        domain.OSSProvider
 	WechatClient       domain.WechatClient
 	SMSClient          infraSMS.Client
+	// VADClient VAD gRPC 客户端（供 ChatService 使用）
+	VADClient vadpb.VADServiceClient
 
 	// 服务层
 	AuthService     service.AuthService
@@ -198,6 +202,15 @@ func (a *App) initInfrastructure() {
 		a.OSSProvider = ossAdapter
 	}
 
+	// VAD gRPC 客户端（可选，地址可通过配置指定）
+	vadAddr := "localhost:50051"
+	vadClient, err := infraVAD.NewVADClient(vadAddr)
+	if err != nil {
+		log.Printf("[App] Warning: VAD client init failed: %v, FreeTalk VAD unavailable", err)
+	} else {
+		a.VADClient = vadClient
+	}
+
 	// WeChat 客户端
 	a.WechatClient = infraWechat.NewClient(a.Config.WeChat)
 
@@ -304,6 +317,7 @@ func (a *App) initServices() {
 		a.LLMProvider,
 		a.TTSProvider,
 		a.OSSProvider,
+		a.VADClient,
 		a.TaskCache,
 		a.ChatCache,
 		a.WorkerManager,
