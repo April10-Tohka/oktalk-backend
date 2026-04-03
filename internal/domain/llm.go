@@ -15,17 +15,15 @@ type LLMProvider interface {
 	// Chat 单轮对话：给定系统提示词和用户消息，返回 AI 生成的文本
 	Chat(ctx context.Context, systemPrompt string, userMessage string) (string, error)
 
-	// ChatWithHistory 多轮对话：给定完整的对话历史，返回 AI 生成的文本
-	ChatWithHistory(ctx context.Context, messages []ChatMessage) (string, error)
+	// ChatStream 流式对话
+	// 给定系统提示词和用户消息，返回 AI 生成的文本流
+	ChatStream(ctx context.Context, systemPrompt string, userMessage string) *ssestream.Stream[responses.ResponseStreamEventUnion]
 
-	// ChatStream 流式多轮对话（用于 Free Talk 模式）
-	// 传入ConversationID，用于关联对话历史
-	// 传入要发送的消息，用于生成新的token
-	// 方法返回stream，由调用方来读取stream中的token，并写入llmOutputChan
-	ChatStream(ctx context.Context, conversationID string, message string) *ssestream.Stream[responses.ResponseStreamEventUnion]
+	// NewConversation 创建新对话，设置系统提示词
+	NewConversation(ctx context.Context, systemPrompt string) (string, error)
 
-	// NewConversation 创建新对话
-	NewConversation(ctx context.Context) (string, error)
+	// ConversationChatStream 基于对话 ID 进行流式对话
+	ConversationChatStream(ctx context.Context, conversationID string, userMessage string) *ssestream.Stream[responses.ResponseStreamEventUnion]
 
 	// Close 关闭客户端，释放资源
 	Close() error

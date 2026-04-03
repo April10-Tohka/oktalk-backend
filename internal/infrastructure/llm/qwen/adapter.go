@@ -9,6 +9,7 @@ import (
 	"pronunciation-correction-system/internal/pkg/logger"
 
 	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/conversations"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/ssestream"
 	"github.com/openai/openai-go/v3/responses"
@@ -71,43 +72,44 @@ func (a *QwenAdapter) ChatStream(ctx context.Context, systemPrompt string, userM
 	return stream
 }
 
-// ChatWithHistory 多轮对话
-// 给定完整的对话历史（包含 system/user/assistant 消息），返回 AI 生成的文本
-func (a *QwenAdapter) ChatWithHistory(ctx context.Context, messages []domain.ChatMessage) (string, error) {
-	// 将领域层 ChatMessage 转换为内部 chatMessage
-	internalMessages := make([]chatMessage, len(messages))
-	for i, msg := range messages {
-		internalMessages[i] = chatMessage{
-			Role:    msg.Role,
-			Content: msg.Content,
-		}
+// NewConversation 创建新对话，设置系统提示词，返回对话 ID
+func (a *QwenAdapter) NewConversation(ctx context.Context, systemPrompt string) (string, error) {
+	items := []responses.ResponseInputItemUnionParam{
+		{
+			OfMessage: &responses.EasyInputMessageParam{
+				Role: responses.EasyInputMessageRoleSystem,
+				Content: responses.EasyInputMessageContentUnionParam{
+					OfString: openai.String(systemPrompt),
+				},
+			},
+		},
 	}
-
-	req := &chatRequest{
-		Messages: internalMessages,
-	}
-
-	resp, err := a.qwenClient.chat(ctx, req)
+	conv, err := a.client.Conversations.New(ctx, conversations.ConversationNewParams{
+		Items: items,
+	})
 	if err != nil {
-		return "", fmt.Errorf("qwen chat with history failed: %w", err)
+		return "", err
 	}
+	return conv.ID, nil
+}
 
-	if len(resp.Choices) == 0 {
-		return "", fmt.Errorf("qwen returned empty response")
-	}
-
-	return resp.Choices[0].Message.Content, nil
+// ConversationChatStream 基于对话 ID 进行流式对话
+func (a *QwenAdapter) ConversationChatStream(ctx context.Context, conversationID string, userMessage string) *ssestream.Stream[responses.ResponseStreamEventUnion] {
+	stream := a.client.Responses.NewStreaming(ctx, responses.ResponseNewParams{
+		Model: a.model,
+		Input: responses.ResponseNewParamsInputUnion{
+			OfString: openai.String(userMessage),
+		},
+		Conversation: responses.ResponseNewParamsConversationUnion{
+			OfConversationObject: &responses.ResponseConversationParam{
+				ID: conversationID,
+			},
+		},
+	})
+	return stream
 }
 
 // Close 关闭客户端，释放资源
 func (a *QwenAdapter) Close() error {
 	return a.qwenClient.close()
-}
-
-func (a *QwenAdapter) NewConversation(ctx context.Context) (string, error) {
-	convID, err := a.qwenClient.newConversation(ctx)
-	if err != nil {
-		return "", fmt.Errorf("qwen new conversation failed: %w", err)
-	}
-	return convID, nil
 }
