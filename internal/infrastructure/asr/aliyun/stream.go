@@ -18,8 +18,13 @@ import (
 
 // ConnectASR 建立流式 ASR 长连接（用于 Free Talk 模式）
 // 返回 AudioSender 用于持续推送实时音频，eventCh 接收识别结果（含 VAD 断句）
-func (a *AliyunASRAdapter) ConnectASR(ctx context.Context, audioChan <-chan []byte, llmInputChan chan<- string, ttsNewTurnChan chan<- struct{}) error {
-	return a.client.connectASR(ctx, audioChan, llmInputChan, ttsNewTurnChan)
+func (a *AliyunASRAdapter) ConnectASR(ctx context.Context) (*websocket.Conn, error) {
+	// 连接WebSocket服务
+	conn, err := a.connectWebSocket(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
 }
 
 // connectASR 内部实现：建立 WebSocket 连接并启动接收 goroutine

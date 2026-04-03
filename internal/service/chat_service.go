@@ -1288,7 +1288,16 @@ func (s *Session) readerGoroutine(audioChan chan<- []byte) {
 
 // ===================== ③ asrGoroutine =====================
 func (s *Session) asrGoroutine(audioChan <-chan []byte, llmInputChan chan<- string, ttsNewTurnChan chan<- struct{}) {
-	s.asrProvider.ConnectASR(s.ctx, audioChan, llmInputChan, ttsNewTurnChan)
+	asrConn, err := s.asrProvider.ConnectASR(s.ctx)
+	if err != nil {
+		slog.Error("[FreeTalk] Connect ASR failed",
+			"error", err,
+			"conversation_id", s.conversationID,
+		)
+		return
+	}
+	defer asrConn.Close()
+
 }
 
 func (s *Session) llmGoroutine(llmInputChan <-chan string, llmOutputChan chan<- domain.LLMChunk, writeChan chan<- wsMessage) {
@@ -1512,11 +1521,6 @@ func (s *Session) handleTextFrame(data []byte) {
 			"conversation_id", s.conversationID,
 		)
 	}
-}
-
-// handleBinaryFrame 处理 App 发来的二进制帧（PCM 音频）
-func (s *Session) handleBinaryFrame(data []byte) {
-
 }
 
 // wsEvent WebSocket 事件（请求和响应的统一结构）
