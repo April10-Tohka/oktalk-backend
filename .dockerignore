@@ -1,0 +1,46 @@
+# Git
+.git
+.gitignore
+
+# IDE / 编辑器
+.idea/
+.vscode/
+.lingma/
+*.swp
+*.swo
+
+# 本地开发 & 测试配置（不打入镜像）
+internal/config/env/dev.yaml
+internal/config/env/test.yaml
+
+# 编译产物
+bin/
+dist/
+build/
+
+# 日志（运行时生成，不需要打入镜像）
+logs/
+*.log
+
+# 临时目录
+tmp/
+temp/
+
+# OS 生成文件
+.DS_Store
+Thumbs.db
+
+# 文档
+doc/
+README.md
+
+# 测试文件
+*_test.go
+coverage.html
+coverage.txt
+
+# VAD Python 服务（独立部署，不随 Go 后端镜像打包）
+vad_service/
+
+# 数据库迁移文件（迁移应在部署前单独执行）
+migrations/
