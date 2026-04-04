@@ -27,8 +27,6 @@ RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 WORKDIR /app
 
 COPY --from=builder /build/bin/server ./server
-COPY --chown=appuser:appgroup internal/config/env/prod.yaml ./internal/config/env/prod.yaml
-COPY --chown=appuser:appgroup configs/ ./configs/
 
 RUN mkdir -p logs && chown -R appuser:appgroup /app
 
