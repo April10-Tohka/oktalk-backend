@@ -274,10 +274,10 @@ func (s *SceneService) SubmitAnswer(ctx context.Context, req *SubmitAnswerReques
 		defer cancel()
 		if url, err := s.ossProvider.UploadAudio(ctx2, key, data); err != nil {
 			s.logger.Warn("scene user audio upload failed", slog.String("error", err.Error()))
-		}else{
+		} else {
 			userAudioURL = url
 		}
-		
+
 	}(append([]byte(nil), req.AudioData...), userAudioKey)
 
 	userTextLower := strings.ToLower(userText)
@@ -359,6 +359,10 @@ func (s *SceneService) SubmitAnswer(ctx context.Context, req *SubmitAnswerReques
 		}
 	} else {
 		newCurrent = sess.CurrentStep
+		if nst, ok := s.sceneLoader.GetStep(sess.SceneID, newCurrent); ok {
+			nextQ = nst.Question
+			nextAudioURL = s.synthQuestionAudio(ctx, req.SessionID, nst.QuestionAudioText)
+		}
 	}
 
 	msg := &model.SceneMessage{
@@ -388,7 +392,7 @@ func (s *SceneService) SubmitAnswer(ctx context.Context, req *SubmitAnswerReques
 
 	return &SubmitAnswerResponse{
 		UserText:             userText,
-		UserAudioURL: userAudioURL,
+		UserAudioURL:         userAudioURL,
 		MatchResult:          matchResult,
 		AIReplyText:          reply.Reply,
 		AIAudioURL:           aiAudioURL,
