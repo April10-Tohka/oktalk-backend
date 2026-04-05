@@ -13,6 +13,7 @@ import (
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/ssestream"
 	"github.com/openai/openai-go/v3/responses"
+	"github.com/openai/openai-go/v3/shared"
 )
 
 // QwenAdapter 通义千问适配器
@@ -52,6 +53,10 @@ func (a *QwenAdapter) Chat(ctx context.Context, systemPrompt string, userMessage
 			OfString: openai.String(userMessage),
 		},
 		Instructions: openai.String(systemPrompt),
+		Reasoning: shared.ReasoningParam{
+			Summary: "concise",
+			Effort:  shared.ReasoningEffortMinimal,
+		},
 	})
 	if err != nil {
 		return "", fmt.Errorf("qwen chat failed: %w", err)
@@ -68,6 +73,10 @@ func (a *QwenAdapter) ChatStream(ctx context.Context, systemPrompt string, userM
 			OfString: openai.String(userMessage),
 		},
 		Instructions: openai.String(systemPrompt),
+		Reasoning: shared.ReasoningParam{
+			Summary: "concise",
+			Effort:  shared.ReasoningEffortMinimal,
+		},
 	})
 	return stream
 }
@@ -104,6 +113,10 @@ func (a *QwenAdapter) ConversationChatStream(ctx context.Context, conversationID
 			OfConversationObject: &responses.ResponseConversationParam{
 				ID: conversationID,
 			},
+		},
+		Reasoning: shared.ReasoningParam{
+			Summary: "concise",
+			Effort:  shared.ReasoningEffortMinimal,
 		},
 	})
 	return stream
