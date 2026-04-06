@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -13,8 +14,6 @@ import (
 	"pronunciation-correction-system/internal/model"
 	"pronunciation-correction-system/internal/pkg/uuid"
 	"pronunciation-correction-system/internal/repository"
-
-	"github.com/redis/go-redis/v9"
 )
 
 // HTTPError 业务层可映射到 HTTP 状态码的错误
@@ -38,8 +37,8 @@ type SceneService struct {
 	llmProvider domain.LLMProvider
 	ttsProvider domain.TTSProvider
 	ossProvider domain.OSSProvider
+	cache       repository.SceneCacheRepository // Redis 缓存
 	logger      *slog.Logger
-	rd          *redis.Client
 }
 
 // NewSceneService 构造函数
@@ -52,7 +51,7 @@ func NewSceneService(
 	tts domain.TTSProvider,
 	oss domain.OSSProvider,
 	logger *slog.Logger,
-	rd *redis.Client,
+	cache repository.SceneCacheRepository,
 ) *SceneService {
 	return &SceneService{
 		sceneLoader: sceneLoader,
@@ -62,8 +61,8 @@ func NewSceneService(
 		llmProvider: llm,
 		ttsProvider: tts,
 		ossProvider: oss,
+		cache:       cache,
 		logger:      logger,
-		rd:          rd,
 	}
 }
 
@@ -160,7 +159,7 @@ func (s *SceneService) StartSession(ctx context.Context, req *SceneStartSessionR
 		}
 	}
 
-	qURL := s.synthQuestionAudio(ctx, sessionID, step.QuestionAudioText)
+	qURL := s.synthQuestionAudio(ctx, sess.SceneID, currentStep, step.QuestionAudioText)
 
 	return &SceneStartSessionResponse{
 		SessionID:         sessionID,
@@ -172,24 +171,14 @@ func (s *SceneService) StartSession(ctx context.Context, req *SceneStartSessionR
 	}, nil
 }
 
-func (s *SceneService) synthQuestionAudio(ctx context.Context, sessionID, text string) string {
-	if strings.TrimSpace(text) == "" {
-		return ""
-	}
-	opts := domain.DefaultSynthesizeOptions()
-	opts.Format = "wav"
-	audio, err := s.ttsProvider.Synthesize(ctx, text, opts)
-	if err != nil {
-		s.logger.Warn("scene TTS question failed", slog.String("error", err.Error()))
-		return ""
-	}
-	key := fmt.Sprintf("scene/%s/q_%s.wav", sessionID, uuid.New())
-	url, err := s.ossProvider.UploadAudio(ctx, key, audio)
-	if err != nil {
-		s.logger.Warn("scene OSS question upload failed", slog.String("error", err.Error()))
-		return ""
-	}
-	return url
+// synthQuestionAudio 带缓存的场景问题音频合成
+// Key 格式：scene:tts:question:{sceneID}:{stepID}
+// TTL：30天（场景配置固定，音频永不变）
+func (s *SceneService) synthQuestionAudio(ctx context.Context, sceneID string, stepID int, text string) string {
+	cacheKey := fmt.Sprintf("scene:tts:question:%s:%d", sceneID, stepID)
+	return s.synthAudioWithCache(ctx, text, cacheKey, 30*24*time.Hour, func() string {
+		return fmt.Sprintf("scene/questions/%s_%d.wav", sceneID, stepID)
+	})
 }
 
 // --- SubmitAnswer ---
@@ -298,7 +287,7 @@ func (s *SceneService) SubmitAnswer(ctx context.Context, req *SubmitAnswerReques
 	}
 
 	if matchResult != "rule_pass" {
-		semOK, st := s.llmSemanticMatch(ctx, scene.Title, step.Question, step.Expected, userText)
+		semOK, st := s.llmSemanticMatchWithCache(ctx, sess.SceneID, req.StepID, scene.Title, step.Question, step.Expected, userText)
 		llmStatus = st
 		if semOK {
 			matchResult = "llm_pass"
@@ -307,24 +296,14 @@ func (s *SceneService) SubmitAnswer(ctx context.Context, req *SubmitAnswerReques
 		}
 	}
 
-	reply := s.buildReplyJSON(ctx, scene, step, userText, matchResult, attempt)
+	reply := s.buildReplyJSONWithCache(ctx, scene, step, sess.SceneID, req.StepID, userText, matchResult, attempt)
 
 	aiAudioURL := ""
 	if reply.Reply != "" {
-		opts := domain.DefaultSynthesizeOptions()
-		opts.Format = "wav"
-		audio, err := s.ttsProvider.Synthesize(ctx, reply.Reply, opts)
-		if err != nil {
-			s.logger.Warn("scene TTS reply failed", slog.String("error", err.Error()))
-		} else {
-			key := fmt.Sprintf("scene/%s/ai_%s.wav", req.SessionID, uuid.New())
-			url, upErr := s.ossProvider.UploadAudio(ctx, key, audio)
-			if upErr != nil {
-				s.logger.Warn("scene OSS ai audio failed", slog.String("error", upErr.Error()))
-			} else {
-				aiAudioURL = url
-			}
-		}
+		cacheKey := fmt.Sprintf("scene:tts:%s", md5str(reply.Reply))
+		aiAudioURL = s.synthAudioWithCache(ctx, reply.Reply, cacheKey, 7*24*time.Hour, func() string {
+			return fmt.Sprintf("scene/%s/ai_%s.wav", req.SessionID, uuid.New())
+		})
 	}
 
 	shouldAdvance := false
@@ -359,14 +338,14 @@ func (s *SceneService) SubmitAnswer(ctx context.Context, req *SubmitAnswerReques
 			newCurrent = nextID
 			if nst, ok := s.sceneLoader.GetStep(sess.SceneID, nextID); ok {
 				nextQ = nst.Question
-				nextAudioURL = s.synthQuestionAudio(ctx, req.SessionID, nst.QuestionAudioText)
+				nextAudioURL = s.synthQuestionAudio(ctx, sess.SceneID, nextID, nst.QuestionAudioText)
 			}
 		}
 	} else {
 		newCurrent = sess.CurrentStep
 		if nst, ok := s.sceneLoader.GetStep(sess.SceneID, newCurrent); ok {
 			nextQ = nst.Question
-			nextAudioURL = s.synthQuestionAudio(ctx, req.SessionID, nst.QuestionAudioText)
+			nextAudioURL = s.synthQuestionAudio(ctx, sess.SceneID, newCurrent, nst.QuestionAudioText)
 		}
 	}
 
@@ -531,6 +510,127 @@ func extractJSONObject(s string) string {
 		}
 	}
 	return s
+}
+
+// normalizeText 标准化用户文本：转小写、去首尾空格、合并连续空格
+// 用于缓存 key 生成，覆盖 ASR 微小识别差异
+func normalizeText(text string) string {
+	t := strings.ToLower(strings.TrimSpace(text))
+	return strings.Join(strings.Fields(t), " ")
+}
+
+// md5str 返回字符串的 MD5 十六进制摘要，用于缓存 key
+func md5str(s string) string {
+	return fmt.Sprintf("%x", md5.Sum([]byte(s)))
+}
+
+// synthAudioWithCache 通用带缓存 TTS 合成
+// 缓存存储的是 OSS URL（不存音频字节，节省 Redis 内存）
+// uploadKeyFn 用于生成 OSS 上传路径
+func (s *SceneService) synthAudioWithCache(
+	ctx context.Context,
+	text string,
+	cacheKey string,
+	ttl time.Duration,
+	uploadKeyFn func() string,
+) string {
+	if text == "" {
+		return ""
+	}
+
+	if val, err := s.cache.Get(ctx, cacheKey); err == nil && val != "" {
+		s.logger.Info("scene tts cache hit", slog.String("key", cacheKey))
+		return val
+	}
+
+	opts := domain.DefaultSynthesizeOptions()
+	opts.Format = "wav"
+	audio, err := s.ttsProvider.Synthesize(ctx, text, opts)
+	if err != nil {
+		s.logger.Warn("scene TTS synthesize failed", slog.String("error", err.Error()))
+		return ""
+	}
+
+	url, err := s.ossProvider.UploadAudio(ctx, uploadKeyFn(), audio)
+	if err != nil {
+		s.logger.Warn("scene OSS upload failed", slog.String("error", err.Error()))
+		return ""
+	}
+
+	if err := s.cache.Set(ctx, cacheKey, url, ttl); err != nil {
+		s.logger.Warn("scene tts cache set failed", slog.String("error", err.Error()))
+	}
+	return url
+}
+
+// llmSemanticMatchWithCache 带 Redis 缓存的语义判断
+// Key 格式：scene:llm:semantic:{sceneID}:{stepID}:{normalizedText的MD5}
+// TTL：7天（相同表达语义固定）
+func (s *SceneService) llmSemanticMatchWithCache(
+	ctx context.Context,
+	sceneID string,
+	stepID int,
+	sceneTitle, question string,
+	expected []string,
+	userText string,
+) (bool, string) {
+	norm := normalizeText(userText)
+	key := fmt.Sprintf("scene:llm:semantic:%s:%d:%s", sceneID, stepID, md5str(norm))
+
+	if val, err := s.cache.Get(ctx, key); err == nil {
+		s.logger.Info("scene llm semantic cache hit", slog.String("key", key))
+		matched := val == "true"
+		status := "fail"
+		if matched {
+			status = "pass"
+		}
+		return matched, status
+	}
+
+	ok, status := s.llmSemanticMatch(ctx, sceneTitle, question, expected, userText)
+
+	cacheVal := "false"
+	if ok {
+		cacheVal = "true"
+	}
+	if err := s.cache.Set(ctx, key, cacheVal, 7*24*time.Hour); err != nil {
+		s.logger.Warn("scene llm semantic cache set failed", slog.String("error", err.Error()))
+	}
+	return ok, status
+}
+
+// buildReplyJSONWithCache 带 Redis 缓存的 LLM 回复生成
+// Key 格式：scene:llm:reply:{sceneID}:{stepID}:{matchResult}:{attempt}:{normalizedText的MD5}
+// TTL：7天
+func (s *SceneService) buildReplyJSONWithCache(
+	ctx context.Context,
+	scene *config.SceneConfig,
+	step *config.SceneStep,
+	sceneID string,
+	stepID int,
+	userText, matchResult string,
+	attempt int,
+) llmReplyParsed {
+	norm := normalizeText(userText)
+	key := fmt.Sprintf("scene:llm:reply:%s:%d:%s:%d:%s",
+		sceneID, stepID, matchResult, attempt, md5str(norm))
+
+	if val, err := s.cache.Get(ctx, key); err == nil {
+		var cached llmReplyParsed
+		if json.Unmarshal([]byte(val), &cached) == nil {
+			s.logger.Info("scene llm reply cache hit", slog.String("key", key))
+			return cached
+		}
+	}
+
+	result := s.buildReplyJSON(ctx, scene, step, userText, matchResult, attempt)
+
+	if b, err := json.Marshal(result); err == nil {
+		if err := s.cache.Set(ctx, key, string(b), 7*24*time.Hour); err != nil {
+			s.logger.Warn("scene llm reply cache set failed", slog.String("error", err.Error()))
+		}
+	}
+	return result
 }
 
 // --- GetSummary ---
