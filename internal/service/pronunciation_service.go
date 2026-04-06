@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ type PronunciationService struct {
 	llmProvider  domain.LLMProvider
 	ttsProvider  domain.TTSProvider
 	ossProvider  domain.OSSProvider
+	cache        repository.SceneCacheRepository // Redis 缓存，复用场景缓存接口
 	logger       *slog.Logger
 }
 
@@ -39,6 +41,7 @@ func NewPronunciationService(
 	tts domain.TTSProvider,
 	oss domain.OSSProvider,
 	logger *slog.Logger,
+	cache repository.SceneCacheRepository,
 ) *PronunciationService {
 	return &PronunciationService{
 		loader:       loader,
@@ -48,6 +51,7 @@ func NewPronunciationService(
 		llmProvider:  llm,
 		ttsProvider:  tts,
 		ossProvider:  oss,
+		cache:        cache,
 		logger:       logger,
 	}
 }
@@ -279,25 +283,10 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 		userAudioURL = url
 	}
 
-	llmOut := s.buildFeedbackLLM(ctx, item.Content, practiceType, rawScore, stars, problemWords)
+	llmOut := s.buildFeedbackLLMWithCache(ctx, sess.UnitID, req.ItemID, item.Content, practiceType, rawScore, stars, problemWords)
 
 	ttsText := strings.TrimSpace(llmOut.Encourage + " " + llmOut.ProblemTip + " " + llmOut.Suggestion)
-	aiAudioURL := ""
-	if ttsText != "" {
-		opts := domain.DefaultSynthesizeOptions()
-		opts.Format = "wav"
-		audio, ttsErr := s.ttsProvider.Synthesize(ctx, ttsText, opts)
-		if ttsErr != nil {
-			s.logger.Warn("pronunciation v2 TTS failed", slog.String("error", ttsErr.Error()))
-		} else {
-			aiKey := fmt.Sprintf("pronunciation/%s/ai_%s.wav", req.SessionID, uuid.New())
-			if u, e2 := s.ossProvider.UploadAudio(ctx, aiKey, audio); e2 != nil {
-				s.logger.Warn("pronunciation v2 AI audio upload failed", slog.String("error", e2.Error()))
-			} else {
-				aiAudioURL = u
-			}
-		}
-	}
+	aiAudioURL := s.synthPronAudioWithCache(ctx, req.SessionID, ttsText)
 
 	pwJSON, _ := json.Marshal(problemWords)
 	rec := &model.PronunciationRecord{
@@ -437,6 +426,97 @@ func clampInt(v, min, max int) int {
 		return max
 	}
 	return v
+}
+
+// scoreBucket 将 rawScore 按 0.5 分一档分桶，用于缓存 key 生成
+// 例如：3.7 → "3.5"，4.2 → "4.0"，5.0 → "5.0"
+func scoreBucket(score float32) string {
+	bucketed := math.Floor(float64(score)*2) / 2
+	return fmt.Sprintf("%.1f", bucketed)
+}
+
+// problemWordsKey 对问题词列表排序后生成 MD5，保证 key 稳定
+func problemWordsKey(words []string) string {
+	sorted := make([]string, len(words))
+	copy(sorted, words)
+	sort.Strings(sorted)
+	return md5str(strings.Join(sorted, ","))
+}
+
+// buildFeedbackLLMWithCache 带 Redis 缓存的 LLM 发音反馈生成
+// Key 格式：pron:llm:feedback:{unitID}:{itemID}:{practiceType}:{scoreBucket}:{problemWordsMD5}
+// TTL：7天（相同题目、相同分档、相同错误词，反馈固定）
+func (s *PronunciationService) buildFeedbackLLMWithCache(
+	ctx context.Context,
+	unitID string,
+	itemID int,
+	content, practiceType string,
+	rawScore float32,
+	stars int,
+	problemWords []string,
+) llmFeedbackJSON {
+	bucket := scoreBucket(rawScore)
+	pwKey := problemWordsKey(problemWords)
+	key := fmt.Sprintf("pron:llm:feedback:%s:%d:%s:%s:%s",
+		unitID, itemID, practiceType, bucket, pwKey)
+
+	if val, err := s.cache.Get(ctx, key); err == nil {
+		var cached llmFeedbackJSON
+		if json.Unmarshal([]byte(val), &cached) == nil {
+			s.logger.Info("pron llm feedback cache hit", slog.String("key", key))
+			return cached
+		}
+	}
+
+	result := s.buildFeedbackLLM(ctx, content, practiceType, rawScore, stars, problemWords)
+
+	if b, err := json.Marshal(result); err == nil {
+		if err := s.cache.Set(ctx, key, string(b), 7*24*time.Hour); err != nil {
+			s.logger.Warn("pron llm feedback cache set failed", slog.String("error", err.Error()))
+		}
+	}
+	return result
+}
+
+// synthPronAudioWithCache 带 Redis 缓存的 TTS 合成（发音纠正模块专用）
+// Key 格式：pron:tts:{ttsText 的 MD5}
+// TTL：30天（相同文本合成结果永不变）
+// 缓存存储 OSS URL，不存音频字节
+func (s *PronunciationService) synthPronAudioWithCache(
+	ctx context.Context,
+	sessionID string,
+	ttsText string,
+) string {
+	if strings.TrimSpace(ttsText) == "" {
+		return ""
+	}
+
+	cacheKey := fmt.Sprintf("pron:tts:%s", md5str(ttsText))
+
+	if val, err := s.cache.Get(ctx, cacheKey); err == nil && val != "" {
+		s.logger.Info("pron tts cache hit", slog.String("key", cacheKey))
+		return val
+	}
+
+	opts := domain.DefaultSynthesizeOptions()
+	opts.Format = "wav"
+	audio, err := s.ttsProvider.Synthesize(ctx, ttsText, opts)
+	if err != nil {
+		s.logger.Warn("pronunciation v2 TTS failed", slog.String("error", err.Error()))
+		return ""
+	}
+
+	aiKey := fmt.Sprintf("pronunciation/%s/ai_%s.wav", sessionID, uuid.New())
+	url, upErr := s.ossProvider.UploadAudio(ctx, aiKey, audio)
+	if upErr != nil {
+		s.logger.Warn("pronunciation v2 AI audio upload failed", slog.String("error", upErr.Error()))
+		return ""
+	}
+
+	if err := s.cache.Set(ctx, cacheKey, url, 30*24*time.Hour); err != nil {
+		s.logger.Warn("pron tts cache set failed", slog.String("error", err.Error()))
+	}
+	return url
 }
 
 // --- Advance ---

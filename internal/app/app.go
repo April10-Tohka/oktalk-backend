@@ -380,6 +380,7 @@ func (a *App) initHandlers() {
 		a.TTSProvider,
 		a.OSSProvider,
 		appLogger,
+		repository.NewRedisCacheRepository(a.RedisClient),
 	)
 
 	a.Handlers = &handler.Handlers{
