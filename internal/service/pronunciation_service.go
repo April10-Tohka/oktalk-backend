@@ -199,7 +199,7 @@ type AIFeedbackBlock struct {
 	Encourage  string `json:"encourage"`
 	ProblemTip string `json:"problem_tip"`
 	Suggestion string `json:"suggestion"`
-	AiAudioURL   string `json:"ai_audio_url"`
+	AiAudioURL string `json:"ai_audio_url"`
 }
 
 // PronunciationEvaluateResponse 评测响应
@@ -268,6 +268,34 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 		return nil, errHTTP(500, "评测服务异常")
 	}
 
+	// 判断评测是否通过
+	if evalResult.IsRejected {
+		// 判断except_info属性值
+		// except_info=28673时，16进制为0x7001，表示引擎判断该语音为无语音或音量小类型
+		// except_info=28676时，16进制为0x7004，表示引擎判断该语音为乱说类型
+		// except_info=28680时，16进制为0x7008，表示引擎判断该语音为信噪比低类型
+		// except_info=28690时，16进制为0x7012，表示引擎判断该语音为截幅类型
+		// except_info=28689时，16进制为0x7011，表示引擎判断没有音频输入，请检测音频或录音设备是否正常
+		switch evalResult.ExceptInfo {
+		case 28673:
+			// 原逻辑：无语音或音量小类型
+			return nil, errHTTP(400, "好像没听到你的声音哦，嘴巴靠近一点，大声读出来吧！")
+		case 28676:
+			// 原逻辑：乱说类型
+			return nil, errHTTP(400, "这次好像读得不太对哦，跟着示范再认真试一次吧！")
+		case 28680:
+			// 原逻辑：信噪比低类型（通常是因为周围太吵）
+			return nil, errHTTP(400, "周围好像有点吵呀，找一个安静的地方，我们再试一次！")
+		case 28690:
+			// 原逻辑：截幅类型（声音太大爆音了）
+			return nil, errHTTP(400, "你的声音太洪亮啦，把手机拿远一点点，轻轻读出来就好啦！")
+		case 28689:
+			// 原逻辑：没有音频输入，请检测音频或录音设备是否正常
+			return nil, errHTTP(400, "检查一下手机有没有开麦克风权限哦！")
+		}
+
+	}
+
 	rawScore := float32(evalResult.TotalScore)
 	rawScore = clampFloat32(rawScore, 0, 5)
 	stars := int(math.Round(float64(rawScore)))
@@ -322,9 +350,9 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 	recommend := rawScore >= 3.75
 
 	return &PronunciationEvaluateResponse{
-		SessionID: req.SessionID,
-		ItemID:    req.ItemID,
-		Content:   item.Content,
+		SessionID:    req.SessionID,
+		ItemID:       req.ItemID,
+		Content:      item.Content,
 		UserAudioURL: userAudioURL,
 		Evaluation: EvaluationBlock{
 			RawScore:     rawScore,
@@ -335,7 +363,7 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 			Encourage:  llmOut.Encourage,
 			ProblemTip: llmOut.ProblemTip,
 			Suggestion: llmOut.Suggestion,
-			AiAudioURL:   aiAudioURL,
+			AiAudioURL: aiAudioURL,
 		},
 		RecommendAdvance: recommend,
 	}, nil
