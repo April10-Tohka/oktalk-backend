@@ -13,6 +13,8 @@ import (
 	"pronunciation-correction-system/internal/model"
 	"pronunciation-correction-system/internal/pkg/uuid"
 	"pronunciation-correction-system/internal/repository"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // HTTPError 业务层可映射到 HTTP 状态码的错误
@@ -37,6 +39,7 @@ type SceneService struct {
 	ttsProvider domain.TTSProvider
 	ossProvider domain.OSSProvider
 	logger      *slog.Logger
+	rd          *redis.Client
 }
 
 // NewSceneService 构造函数
@@ -49,6 +52,7 @@ func NewSceneService(
 	tts domain.TTSProvider,
 	oss domain.OSSProvider,
 	logger *slog.Logger,
+	rd *redis.Client,
 ) *SceneService {
 	return &SceneService{
 		sceneLoader: sceneLoader,
@@ -59,6 +63,7 @@ func NewSceneService(
 		ttsProvider: tts,
 		ossProvider: oss,
 		logger:      logger,
+		rd:          rd,
 	}
 }
 

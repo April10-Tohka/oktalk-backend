@@ -366,6 +366,7 @@ func (a *App) initHandlers() {
 		a.TTSProvider,
 		a.OSSProvider,
 		appLogger,
+		a.RedisClient,
 	)
 
 	pronSessionRepo := repository.NewPronunciationSessionRepository(a.DB)
