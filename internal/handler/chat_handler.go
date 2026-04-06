@@ -114,14 +114,6 @@ func (h *ChatHandler) ChatMVP(c *gin.Context) {
 // StartSession POST /api/v1/chat/start-session
 // 创建新的对话会话
 func (h *ChatHandler) StartSession(c *gin.Context) {
-	var reqBody struct {
-		ConversationType string `json:"conversation_type"`
-		Topic            string `json:"topic"`
-	}
-	if err := c.ShouldBindJSON(&reqBody); err != nil && err != io.EOF {
-		BadRequest(c, "invalid request body: "+err.Error())
-		return
-	}
 
 	userID, exists := c.Get(string(middleware.UserIDKey))
 	if !exists {
@@ -130,9 +122,7 @@ func (h *ChatHandler) StartSession(c *gin.Context) {
 	}
 
 	result, err := h.chatService.StartSession(c.Request.Context(), &service.StartSessionRequest{
-		ConversationType: reqBody.ConversationType,
-		Topic:            reqBody.Topic,
-		UserID:           userID.(string),
+		UserID: userID.(string),
 	})
 	if err != nil {
 		InternalError(c, err.Error())

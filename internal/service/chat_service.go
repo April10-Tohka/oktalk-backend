@@ -89,6 +89,7 @@ type HandleFreetalkRequest struct {
 // ===== 响应结构 =====
 
 type StartSessionResponse struct {
+	SessionId        string `json:"session_id"`
 	ConversationID   string `json:"conversation_id"`
 	ConversationType string `json:"conversation_type"`
 	DifficultyLevel  string `json:"difficulty_level"`
@@ -250,24 +251,13 @@ func (s *chatServiceImpl) StartSession(ctx context.Context, req *StartSessionReq
 		return nil, err
 	}
 
-	conversationType := strings.TrimSpace(req.ConversationType)
-	if conversationType == "" {
-		conversationType = "free_talk"
-	}
-	topic := strings.TrimSpace(req.Topic)
-	if topic == "" {
-		topic = "General"
-	}
-
-	conversationID := uuid.New()
+	sessionId := uuid.New()
 	conversation := &model.VoiceConversation{
-		ID:               conversationID,
-		UserID:           req.UserID,
-		Topic:            topic,
-		ConversationType: conversationType,
-		MessageCount:     0,
-		DurationSeconds:  0,
-		Status:           "active",
+		ID:              sessionId,
+		UserID:          req.UserID,
+		MessageCount:    0,
+		DurationSeconds: 0,
+		Status:          "active",
 	}
 	if err := s.conversationRepo.Create(ctx, conversation); err != nil {
 		logger.ErrorContext(ctx, "start session create conversation failed", "error", err)
@@ -275,10 +265,8 @@ func (s *chatServiceImpl) StartSession(ctx context.Context, req *StartSessionReq
 	}
 
 	return &StartSessionResponse{
-		ConversationID:   conversationID,
-		ConversationType: conversationType,
-		Topic:            topic,
-		Status:           "active",
+		SessionId: sessionId,
+		Status:    "active",
 	}, nil
 }
 
