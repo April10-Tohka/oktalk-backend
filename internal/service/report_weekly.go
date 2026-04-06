@@ -9,6 +9,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"pronunciation-correction-system/internal/config"
@@ -103,10 +104,23 @@ func (s *reportServiceImpl) GenerateWeeklyReport(ctx context.Context, userID str
 	// 构建场景对话表现
 	scene := ReportScene{PassRate: passRate, CompletedScenes: completed}
 
+	var wg sync.WaitGroup
+	var encourage ReportEncourage
+	var full ReportFullContent
+
 	// 生成本周鼓励语
-	encourage := s.llmWeeklyEncourage(ctx, activity, radar.AccuracyScore)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		encourage = s.llmWeeklyEncourage(ctx, activity, radar.AccuracyScore)
+	}()
 	// 生成本周完整报告
-	full := s.llmWeeklyFull(ctx, weekStart, weekEnd, activity, radar, scene, hardWords)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		full = s.llmWeeklyFull(ctx, weekStart, weekEnd, activity, radar, scene, hardWords)
+	}()
+	wg.Wait()
 
 	// 构建周报数据
 	data := WeeklyReportData{
