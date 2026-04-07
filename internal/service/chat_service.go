@@ -1271,16 +1271,15 @@ func (s *Session) readerGoroutine(audioChan chan<- []byte) {
 			return
 		default:
 		}
-		slog.Info("准备readmessage")
 		messageType, data, err := s.appConn.ReadMessage()
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-				slog.Info("[FreeTalk] App disconnected normally",
+				slog.Info("[FreeTalk-Reader] App disconnected normally",
 					"conversation_id", s.conversationID,
 				)
 				return
 			}
-			slog.Error("[FreeTalk] Read from app failed",
+			slog.Error("[FreeTalk-Reader] Read from app failed",
 				"error", err,
 				"conversation_id", s.conversationID,
 			)
@@ -1295,7 +1294,7 @@ func (s *Session) readerGoroutine(audioChan chan<- []byte) {
 			audioChan <- data
 
 		default:
-			slog.Warn("[FreeTalk] Unexpected message type",
+			slog.Warn("[FreeTalk-Reader] Unexpected message type",
 				"type", messageType,
 				"conversation_id", s.conversationID,
 			)
@@ -1320,7 +1319,7 @@ func (s *Session) vadSendGoroutine(stream vadpb.VADService_StreamingVADClient, r
 				PcmData:    audio,
 				SampleRate: 16000,
 			}); err != nil {
-				slog.Error("[FreeTalk] VAD stream send failed",
+				slog.Error("[FreeTalk-VADSend] VAD stream send failed",
 					"error", err,
 					"conversation_id", s.conversationID,
 				)
@@ -1340,7 +1339,7 @@ func (s *Session) vadRecvGoroutine(stream vadpb.VADService_StreamingVADClient, a
 				// 正常退出：流关闭或 ctx 已取消
 				return
 			}
-			slog.Error("[FreeTalk] VAD stream recv failed",
+			slog.Error("[FreeTalk-VADRecv] VAD stream recv failed",
 				"error", err,
 				"conversation_id", s.conversationID,
 			)
@@ -1376,7 +1375,7 @@ func (s *Session) asrGoroutine(audioChan <-chan []byte, llmInputChan chan<- stri
 	for audio := range audioChan {
 		result, err := s.asrProvider.RecognizeAudio(s.ctx, audio)
 		if err != nil {
-			slog.Error("[FreeTalk] ASR recognize audio failed",
+			slog.Error("[FreeTalk-ASR] ASR recognize audio failed",
 				"error", err,
 				"conversation_id", s.conversationID,
 			)
@@ -1397,7 +1396,7 @@ func (s *Session) llmGoroutine(
 
 	convID, err := s.llmProvider.NewConversation(s.ctx, systemPrompt)
 	if err != nil {
-		slog.Error("[FreeTalk] New conversation failed",
+		slog.Error("[FreeTalk-LLM] New conversation failed",
 			"error", err,
 			"conversation_id", s.conversationID,
 		)
@@ -1500,7 +1499,7 @@ func (s *Session) llmGoroutine(
 					switch event.Type {
 
 					case "response.output_text.delta":
-						slog.Info("[FreeTalk] LLM delta", "delta", event.Delta)
+						slog.Info("[FreeTalk-LLM] LLM delta", "delta", event.Delta)
 						// 发 token 给切分 goroutine
 						tokenChan <- event.Delta
 						// 同时转发给 App 显示实时字幕
@@ -1510,14 +1509,14 @@ func (s *Session) llmGoroutine(
 						}
 
 					case "response.output_text.done":
-						slog.Info("[FreeTalk] LLM done")
+						slog.Info("[FreeTalk-LLM] LLM done")
 						// 发空字符串通知切分 goroutine：本轮结束，flush 并发 IsDone
 						tokenChan <- "__END__"
 					}
 				}
 
 				if stream.Err() != nil {
-					slog.Error("[FreeTalk] LLM stream failed",
+					slog.Error("[FreeTalk-LLM] LLM stream failed",
 						"error", stream.Err(),
 					)
 					s.cancel()
@@ -1537,7 +1536,7 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 		//  建立websocket连接。需要使用ttsProvider.ConnectTTS()方法。
 		ttsConn, err := s.ttsProvider.ConnectTTS(s.ctx)
 		if err != nil {
-			slog.Error("[FreeTalk] Connect TTS failed",
+			slog.Error("[FreeTalk-TTS] Connect TTS failed",
 				"error", err,
 				"conversation_id", s.conversationID,
 			)
@@ -1557,11 +1556,11 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 				"task_group": "audio",
 				"task":       "tts",
 				"function":   "SpeechSynthesizer",
-				"model":      "cosyvoice-v3-flash",
+				"model":      "cosyvoice-v1",
 				"parameters": map[string]interface{}{
 					"text_type":   "PlainText",
-					"voice":       "longanyang",
-					"format":      "mp3",
+					"voice":       "longwan",
+					"format":      "wav",
 					"sample_rate": 22050,
 					"volume":      50,
 					"rate":        1,
@@ -1574,9 +1573,9 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 		}
 
 		runTaskJSON, _ := json.Marshal(runTaskCmd)
-		ttsConn.WriteMessage(websocket.TextMessage, runTaskJSON)
+		err = ttsConn.WriteMessage(websocket.TextMessage, runTaskJSON)
 		if err != nil {
-			slog.Error("[FreeTalk] Send run task failed",
+			slog.Error("[FreeTalk-TTS] Send run task failed",
 				"error", err,
 			)
 			return
@@ -1588,7 +1587,7 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 			for {
 				messageType, message, err := ttsConn.ReadMessage()
 				if err != nil {
-					slog.Error("[FreeTalk] Read tts message failed",
+					slog.Error("[FreeTalk-TTS] Read tts message failed",
 						"error", err,
 					)
 					return
@@ -1602,19 +1601,19 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 				} else if messageType == websocket.TextMessage {
 					var event wsEvent
 					if err := json.Unmarshal(message, &event); err != nil {
-						slog.Error("[FreeTalk] Parse event failed",
+						slog.Error("[FreeTalk-TTS] Parse event failed",
 							"error", err,
 						)
 					}
 					if event.Header.Event == "task-started" {
 						taskStartedChan <- struct{}{}
 					} else if event.Header.Event == "task-failed" {
-						slog.Error("[FreeTalk] Task failed",
+						slog.Error("[FreeTalk-TTS] Task failed",
 							"error", event.Header.ErrorMessage,
 						)
 						return
 					} else if event.Header.Event == "task-finished" {
-						slog.Info("[FreeTalk] Task finished",
+						slog.Info("[FreeTalk-TTS] Task finished",
 							"task_id", event.Header.TaskID,
 						)
 						return
@@ -1642,7 +1641,7 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 			continueTaskJSON, _ := json.Marshal(continueTaskCmd)
 			err = ttsConn.WriteMessage(websocket.TextMessage, continueTaskJSON)
 			if err != nil {
-				slog.Error("[FreeTalk] Send continue task failed",
+				slog.Error("[FreeTalk-TTS] Send continue task failed",
 					"error", err,
 				)
 				return
@@ -1665,7 +1664,7 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 
 				err = ttsConn.WriteMessage(websocket.TextMessage, finishTaskJSON)
 				if err != nil {
-					slog.Error("[FreeTalk] Send finish task failed",
+					slog.Error("[FreeTalk-TTS] Send finish task failed",
 						"error", err,
 					)
 				}
@@ -1681,7 +1680,7 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 func (s *Session) handleTextFrame(data []byte) {
 	var msg IncomingMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
-		slog.Warn("[FreeTalk] Parse text frame failed",
+		slog.Warn("[FreeTalk-Reader] Parse text frame failed",
 			"error", err,
 			"conversation_id", s.conversationID,
 		)
@@ -1690,13 +1689,13 @@ func (s *Session) handleTextFrame(data []byte) {
 
 	switch msg.Type {
 	case "stop":
-		slog.Info("[FreeTalk] Received stop command",
+		slog.Info("[FreeTalk-Reader] Received stop command",
 			"conversation_id", s.conversationID,
 		)
 		s.cancel()
 
 	default:
-		slog.Warn("[FreeTalk] Unknown text frame type",
+		slog.Warn("[FreeTalk-Reader] Unknown text frame type",
 			"type", msg.Type,
 			"conversation_id", s.conversationID,
 		)

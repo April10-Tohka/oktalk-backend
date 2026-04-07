@@ -303,7 +303,7 @@ func (h *ChatHandler) HandleWebSocket(c *gin.Context) {
 	}
 	// 2. 解析query获取conversation_id
 	type freetalkRequestBody struct {
-		ConversationID string `form:"conversation_id" binding:"required"`
+		SessionID string `form:"session_id" binding:"required"`
 	}
 	var reqBody freetalkRequestBody
 	if err := c.ShouldBindQuery(&reqBody); err != nil {
@@ -311,7 +311,7 @@ func (h *ChatHandler) HandleWebSocket(c *gin.Context) {
 		BadRequest(c, "invalid request body: "+err.Error())
 		return
 	}
-	conversationID := reqBody.ConversationID
+	conversationID := reqBody.SessionID
 	if conversationID == "" {
 		slog.Error("[FreeTalk] missing conversation_id")
 		c.JSON(http.StatusBadRequest, gin.H{
