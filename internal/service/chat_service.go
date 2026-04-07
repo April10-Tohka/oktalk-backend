@@ -1099,6 +1099,8 @@ const (
 	// MsgTypeASRPartial ASR 中间识别文本（后端 → App）
 	// 用于实时展示识别过程
 	MsgTypeASRPartial = "asr_partial"
+
+	MsgTypeListening = "listening" // ← 新增
 )
 
 // ===================== App → 后端（Text Frame）=====================
@@ -1350,7 +1352,8 @@ func (s *Session) vadRecvGoroutine(stream vadpb.VADService_StreamingVADClient, a
 		switch event.Type {
 		case vadpb.VADEvent_SPEECH_START:
 			// 通知 App 前端：用户开始说话
-			data, _ := json.Marshal(map[string]string{"type": "listening"})
+			msg := OutgoingMessage{Type: MsgTypeListening}
+			data, _ := json.Marshal(msg)
 			select {
 			case writeChan <- wsMessage{messageType: websocket.TextMessage, data: data}:
 			case <-s.ctx.Done():
@@ -1503,10 +1506,9 @@ func (s *Session) llmGoroutine(
 						// 发 token 给切分 goroutine
 						tokenChan <- event.Delta
 						// 同时转发给 App 显示实时字幕
-						writeChan <- wsMessage{
-							messageType: websocket.TextMessage,
-							data:        []byte(event.Delta),
-						}
+						msg := OutgoingMessage{Type: MsgTypeLLMToken, Text: event.Delta}
+						data, _ := json.Marshal(msg)
+						writeChan <- wsMessage{messageType: websocket.TextMessage, data: data}
 
 					case "response.output_text.done":
 						slog.Info("[FreeTalk-LLM] LLM done")
@@ -1560,8 +1562,8 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 				"parameters": map[string]interface{}{
 					"text_type":   "PlainText",
 					"voice":       "longwan",
-					"format":      "wav",
-					"sample_rate": 22050,
+					"format":      "pcm",
+					"sample_rate": 16000,
 					"volume":      50,
 					"rate":        1,
 					"pitch":       1,
@@ -1616,6 +1618,10 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 						slog.Info("[FreeTalk-TTS] Task finished",
 							"task_id", event.Header.TaskID,
 						)
+						// 通知 App：本轮 AI 音频全部发送完毕
+						turnEndMsg := OutgoingMessage{Type: MsgTypeTurnEnd}
+						turnEndData, _ := json.Marshal(turnEndMsg)
+						writeChan <- wsMessage{messageType: websocket.TextMessage, data: turnEndData}
 						return
 					}
 				}
