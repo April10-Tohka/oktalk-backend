@@ -1205,6 +1205,15 @@ func (s *Session) Run() error {
 	go s.ttsGoroutine(llmOutputChan, ttsNewTurnChan, writeChan)
 
 	<-s.ctx.Done()
+	slog.Info("[FreeTalk] Session ending, closing channels")
+	// 统一关闭所有 channel，让各 goroutine 的 range 循环自然退出
+	// 顺序：按数据流方向，从源头到末端
+	close(rawAudioChan)
+	close(asrAudioChan)
+	close(llmInputChan)
+	close(llmOutputChan)
+	close(ttsNewTurnChan)
+	close(writeChan)
 	return nil
 }
 
@@ -1257,7 +1266,11 @@ func (s *Session) readerGoroutine(rawAudioChan chan<- []byte) {
 			)
 
 		case websocket.BinaryMessage:
-			rawAudioChan <- data
+			select {
+			case <-s.ctx.Done():
+				return
+			case rawAudioChan <- data:
+			}
 
 		default:
 			slog.Warn("[FreeTalk-Reader] Unexpected message type",
@@ -1538,7 +1551,7 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 				)
 				return
 			}
-			defer ttsConn.Close() // 确保连接被关闭
+
 			// 生成任务ID
 			taskID := uuid.New()
 
@@ -1708,6 +1721,7 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 					}
 				}
 			}
+			ttsConn.Close() // 确保连接被关闭
 		}
 	}
 }
