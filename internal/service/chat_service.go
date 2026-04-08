@@ -9,7 +9,6 @@ import (
 	"io"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	"pronunciation-correction-system/internal/cache"
@@ -747,8 +746,6 @@ func (s *chatServiceImpl) ValidateFreetalk(ctx context.Context, req *ValidateFre
 
 // HandleFreetalk 处理 free talk 模式语音对话请求
 func (s *chatServiceImpl) HandleFreetalk(ctx context.Context, req *HandleFreetalkRequest) error {
-	// 1. 更新会话状态为 active
-	_ = s.conversationRepo.UpdateStatus(ctx, req.ConversationID, "active")
 
 	// 2. 创建并启动 Session
 	// vadClient 由调用方（Handler 层）通过 chatServiceImpl.vadClient 注入，
@@ -758,8 +755,6 @@ func (s *chatServiceImpl) HandleFreetalk(ctx context.Context, req *HandleFreetal
 		s.asrProvider,
 		s.llmProvider,
 		s.ttsProvider,
-		s.conversationRepo,
-		s.messageRepo,
 		req.ConversationID,
 		req.UserID,
 		s.vadClient,
@@ -1149,18 +1144,12 @@ type Session struct {
 	llmProvider domain.LLMProvider
 	ttsProvider domain.TTSProvider
 
-	// VAD gRPC 客户端（可为 nil，nil 时跳过 VAD 直接送 ASR）
+	// VAD gRPC 客户端
 	vadClient vadpb.VADServiceClient
 
-	// 状态机
-	state   sessionState
-	stateMu sync.Mutex
-
 	// 会话信息
-	conversationID   string
-	userID           string
-	conversationRepo db.VoiceConversationRepository
-	messageRepo      db.ConversationMessageRepository
+	conversationID string
+	userID         string
 
 	// 上下文
 	ctx    context.Context
@@ -1172,26 +1161,21 @@ func NewSession(
 	asrProvider domain.ASRProvider,
 	llmProvider domain.LLMProvider,
 	ttsProvider domain.TTSProvider,
-	conversationRepo db.VoiceConversationRepository,
-	messageRepo db.ConversationMessageRepository,
 	conversationID string,
 	userID string,
 	vadClient vadpb.VADServiceClient,
 ) *Session {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Session{
-		appConn:          appConn,
-		asrProvider:      asrProvider,
-		llmProvider:      llmProvider,
-		ttsProvider:      ttsProvider,
-		conversationRepo: conversationRepo,
-		messageRepo:      messageRepo,
-		conversationID:   conversationID,
-		userID:           userID,
-		vadClient:        vadClient,
-		ctx:              ctx,
-		cancel:           cancel,
-		state:            stateIdle,
+		appConn:        appConn,
+		asrProvider:    asrProvider,
+		llmProvider:    llmProvider,
+		ttsProvider:    ttsProvider,
+		conversationID: conversationID,
+		userID:         userID,
+		vadClient:      vadClient,
+		ctx:            ctx,
+		cancel:         cancel,
 	}
 }
 
