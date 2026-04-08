@@ -1201,7 +1201,7 @@ func (s *Session) Run() error {
 	llmInputChan := make(chan string, 1024)           // ASR goroutine → LLM goroutine（触发LLM，携带识别文本）
 	llmOutputChan := make(chan domain.LLMChunk, 1024) // LLM goroutine → TTS goroutine（流式token投喂TTS）
 	writeChan := make(chan wsMessage, 1024)           // 所有goroutine → Writer goroutine（统一写App WebSocket）
-	ttsNewTurnChan := make(chan struct{}, 1024)       // ASR goroutine → TTS goroutine（触发新一轮TTS任务）
+	ttsNewTurnChan := make(chan struct{}, 1024)       // LLM goroutine → TTS goroutine（触发新一轮TTS任务）
 
 	// 建立 VAD gRPC 双向流
 	vadStream, err := s.vadClient.StreamingVAD(s.ctx)
@@ -1216,8 +1216,8 @@ func (s *Session) Run() error {
 	go s.writerGoroutine(writeChan)
 	go s.vadSendGoroutine(vadStream, rawAudioChan)
 	go s.vadRecvGoroutine(vadStream, asrAudioChan, writeChan)
-	go s.asrGoroutine(asrAudioChan, llmInputChan, ttsNewTurnChan)
-	go s.llmGoroutine(llmInputChan, llmOutputChan, writeChan)
+	go s.asrGoroutine(asrAudioChan, llmInputChan)
+	go s.llmGoroutine(llmInputChan, llmOutputChan, ttsNewTurnChan, writeChan)
 	go s.ttsGoroutine(llmOutputChan, ttsNewTurnChan, writeChan)
 
 	<-s.ctx.Done()
@@ -1364,25 +1364,34 @@ func (s *Session) vadRecvGoroutine(stream vadpb.VADService_StreamingVADClient, a
 }
 
 // ===================== ③ asrGoroutine =====================
-func (s *Session) asrGoroutine(audioChan <-chan []byte, llmInputChan chan<- string, ttsNewTurnChan chan<- struct{}) {
-	for audio := range audioChan {
-		result, err := s.asrProvider.RecognizeAudio(s.ctx, audio)
-		if err != nil {
-			slog.Error("[FreeTalk-ASR] ASR recognize audio failed",
-				"error", err,
-				"conversation_id", s.conversationID,
-			)
-			s.cancel()
+func (s *Session) asrGoroutine(audioChan <-chan []byte, llmInputChan chan<- string) {
+	for {
+		select {
+		case <-s.ctx.Done():
 			return
+		case audio, ok := <-audioChan:
+			if !ok {
+				// audioChan 只有在Session结束时才会被关闭，正常情况下不应该发生
+				return
+			}
+			result, err := s.asrProvider.RecognizeAudio(s.ctx, audio)
+			if err != nil {
+				slog.Error("[FreeTalk-ASR] ASR recognize audio failed",
+					"error", err,
+					"conversation_id", s.conversationID,
+				)
+				s.cancel()
+				return
+			}
+			llmInputChan <- result
 		}
-		llmInputChan <- result
-		ttsNewTurnChan <- struct{}{}
 	}
 }
 
 func (s *Session) llmGoroutine(
 	llmInputChan <-chan string,
 	llmOutputChan chan<- domain.LLMChunk,
+	ttsNewTurnChan chan<- struct{},
 	writeChan chan<- wsMessage,
 ) {
 	systemPrompt := "You are a helpful assistant for English learning. Please provide concise and encouraging responses to help the user practice English speaking."
@@ -1399,7 +1408,7 @@ func (s *Session) llmGoroutine(
 
 	// tokenChan 传递两种信号：
 	//   普通字符串 → token，追加进 builder
-	//   "" 空字符串 → LLM 本轮输出结束，切分 goroutine 负责 flush 残留并发 IsDone:true
+	//   "__END__"  → LLM 本轮输出结束，切分 goroutine 负责 flush 残留并发 IsDone:true
 	tokenChan := make(chan string, 100)
 
 	// ── 句子切分 goroutine ────────────────────────────────────────
@@ -1486,13 +1495,21 @@ func (s *Session) llmGoroutine(
 				}
 
 				stream := s.llmProvider.ConversationChatStream(s.ctx, convID, input)
-
+				firstToken := true
 				for stream.Next() {
 					event := stream.Current()
 					switch event.Type {
 
 					case "response.output_text.delta":
 						slog.Info("[FreeTalk-LLM] LLM delta", "delta", event.Delta)
+						if firstToken {
+							firstToken = false
+							select {
+							case ttsNewTurnChan <- struct{}{}: // 触发 TTS 建立连接
+							case <-s.ctx.Done():
+								return
+							}
+						}
 						// 发 token 给切分 goroutine
 						tokenChan <- event.Delta
 						// 同时转发给 App 显示实时字幕
@@ -1502,7 +1519,7 @@ func (s *Session) llmGoroutine(
 
 					case "response.output_text.done":
 						slog.Info("[FreeTalk-LLM] LLM done")
-						// 发空字符串通知切分 goroutine：本轮结束，flush 并发 IsDone
+						// 发__END__通知切分 goroutine：本轮结束，flush 并发 IsDone
 						tokenChan <- "__END__"
 					}
 				}
@@ -1537,6 +1554,7 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 				)
 				return
 			}
+			defer ttsConn.Close() // 确保连接被关闭
 			// 生成任务ID
 			taskID := uuid.New()
 
