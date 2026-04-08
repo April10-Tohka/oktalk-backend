@@ -1257,20 +1257,20 @@ func (s *Session) readerGoroutine(rawAudioChan chan<- []byte) {
 		}
 		slog.Debug("[FreeTalk-Reader] Waiting for app message")
 		messageType, data, err := s.appConn.ReadMessage()
-		if err != nil {
-			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-				slog.Info("[FreeTalk-Reader] App disconnected normally")
-				return
-			}
-			slog.Error("[FreeTalk-Reader] Read from app failed",
-				"error", err,
-			)
+		if websocket.IsCloseError(err,
+			websocket.CloseNormalClosure,    // 1000
+			websocket.CloseGoingAway,        // 1001
+			websocket.CloseNoStatusReceived, // 1005  ← 重要
+			websocket.CloseAbnormalClosure,  // 1006
+		) {
+			slog.Info("[FreeTalk-Reader] App closed the connection normally")
 			return
 		}
-
 		switch messageType {
 		case websocket.TextMessage:
-			s.handleTextFrame(data)
+			slog.Warn("[FreeTalk-Reader] Unexpected text frame from app, ignoring",
+				"data", string(data),
+			)
 
 		case websocket.BinaryMessage:
 			rawAudioChan <- data
@@ -1708,13 +1708,6 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 			}
 		}
 	}
-}
-
-// handleTextFrame 处理 App 发来的文本帧
-func (s *Session) handleTextFrame(data []byte) {
-	slog.Warn("[FreeTalk-Reader] Unexpected text frame from app, ignoring",
-		"data", string(data),
-	)
 }
 
 // wsEvent WebSocket 事件（请求和响应的统一结构）
