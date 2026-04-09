@@ -47,7 +47,7 @@ func NewQwenAdapter(cfg config.QwenConfig) *QwenAdapter {
 // Chat 单轮对话
 // 给定系统提示词和用户消息，返回 AI 生成的文本
 func (a *QwenAdapter) Chat(ctx context.Context, systemPrompt string, userMessage string) (string, error) {
-	resp, err := a.client.Responses.New(ctx, responses.ResponseNewParams{
+	params := responses.ResponseNewParams{
 		Model: a.model,
 		Input: responses.ResponseNewParamsInputUnion{
 			OfString: openai.String(userMessage),
@@ -57,7 +57,11 @@ func (a *QwenAdapter) Chat(ctx context.Context, systemPrompt string, userMessage
 			Summary: "concise",
 			Effort:  shared.ReasoningEffortNone,
 		},
+	}
+	params.SetExtraFields(map[string]any{
+		"enable_thinking": false, // 改成 false，关闭思考模式，显著降低延迟
 	})
+	resp, err := a.client.Responses.New(ctx, params)
 	if err != nil {
 		return "", fmt.Errorf("qwen chat failed: %w", err)
 	}
@@ -67,7 +71,7 @@ func (a *QwenAdapter) Chat(ctx context.Context, systemPrompt string, userMessage
 // ChatStream 流式对话
 // 给定系统提示词和用户消息，返回 AI 生成的文本流
 func (a *QwenAdapter) ChatStream(ctx context.Context, systemPrompt string, userMessage string) *ssestream.Stream[responses.ResponseStreamEventUnion] {
-	stream := a.client.Responses.NewStreaming(ctx, responses.ResponseNewParams{
+	params := responses.ResponseNewParams{
 		Model: a.model,
 		Input: responses.ResponseNewParamsInputUnion{
 			OfString: openai.String(userMessage),
@@ -77,7 +81,11 @@ func (a *QwenAdapter) ChatStream(ctx context.Context, systemPrompt string, userM
 			Summary: "concise",
 			Effort:  shared.ReasoningEffortNone,
 		},
+	}
+	params.SetExtraFields(map[string]any{
+		"enable_thinking": false, // 改成 false，关闭思考模式，显著降低延迟
 	})
+	stream := a.client.Responses.NewStreaming(ctx, params)
 	return stream
 }
 
@@ -104,7 +112,7 @@ func (a *QwenAdapter) NewConversation(ctx context.Context, systemPrompt string) 
 
 // ConversationChatStream 基于对话 ID 进行流式对话
 func (a *QwenAdapter) ConversationChatStream(ctx context.Context, conversationID string, userMessage string) *ssestream.Stream[responses.ResponseStreamEventUnion] {
-	stream := a.client.Responses.NewStreaming(ctx, responses.ResponseNewParams{
+	params := responses.ResponseNewParams{
 		Model: a.model,
 		Input: responses.ResponseNewParamsInputUnion{
 			OfString: openai.String(userMessage),
@@ -118,7 +126,11 @@ func (a *QwenAdapter) ConversationChatStream(ctx context.Context, conversationID
 			Summary: "concise",
 			Effort:  shared.ReasoningEffortNone,
 		},
+	}
+	params.SetExtraFields(map[string]any{
+		"enable_thinking": false, // 改成 false，关闭思考模式，显著降低延迟
 	})
+	stream := a.client.Responses.NewStreaming(ctx, params)
 	return stream
 }
 
