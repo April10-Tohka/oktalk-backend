@@ -55,7 +55,7 @@ func (a *QwenAdapter) Chat(ctx context.Context, systemPrompt string, userMessage
 		Instructions: openai.String(systemPrompt),
 		Reasoning: shared.ReasoningParam{
 			Summary: "concise",
-			Effort:  shared.ReasoningEffortMinimal,
+			Effort:  shared.ReasoningEffortNone,
 		},
 	})
 	if err != nil {
@@ -75,7 +75,7 @@ func (a *QwenAdapter) ChatStream(ctx context.Context, systemPrompt string, userM
 		Instructions: openai.String(systemPrompt),
 		Reasoning: shared.ReasoningParam{
 			Summary: "concise",
-			Effort:  shared.ReasoningEffortMinimal,
+			Effort:  shared.ReasoningEffortNone,
 		},
 	})
 	return stream
@@ -116,7 +116,7 @@ func (a *QwenAdapter) ConversationChatStream(ctx context.Context, conversationID
 		},
 		Reasoning: shared.ReasoningParam{
 			Summary: "concise",
-			Effort:  shared.ReasoningEffortMinimal,
+			Effort:  shared.ReasoningEffortNone,
 		},
 	})
 	return stream
