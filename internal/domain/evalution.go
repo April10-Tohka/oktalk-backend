@@ -41,8 +41,8 @@ type WordEvaluationResult struct {
 
 // PhonemeEvaluationResult 音素级结果。
 type PhonemeEvaluationResult struct {
-	Phoneme   string  `json:"phoneme"`
-	Score     float64 `json:"score"`
-	BeginTime int     `json:"begin_time"`
-	EndTime   int     `json:"end_time"`
+	Phoneme   string `json:"phoneme"`
+	DpMessage int    `json:"dp_message"`
+	BeginTime int    `json:"begin_time"`
+	EndTime   int    `json:"end_time"`
 }

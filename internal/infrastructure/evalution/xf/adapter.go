@@ -142,7 +142,7 @@ func phonesToDomain(w wordResult) []domain.PhonemeEvaluationResult {
 			}
 			out = append(out, domain.PhonemeEvaluationResult{
 				Phoneme:   ph.Content,
-				Score:     0,
+				DpMessage: ph.DpMessage,
 				BeginTime: ph.BegPos,
 				EndTime:   ph.EndPos,
 			})
