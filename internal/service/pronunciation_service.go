@@ -323,7 +323,7 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 	}()
 
 	llmOut := s.buildFeedbackLLMWithCache(ctx, sess.UnitID, req.ItemID, item.Content, practiceType, rawScore, stars, correctionInput)
-
+	s.logger.Debug("pronunciation v2 llm feedback", slog.Any("input", correctionInput), slog.Any("output", llmOut))
 	// tts
 	ttsText := strings.TrimSpace(llmOut.Encourage + " " + llmOut.ProblemTip + " " + llmOut.Retry)
 	var aiAudioURL string
@@ -340,6 +340,7 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 		howToFixURL = s.synthPronAudioWithCache(ctx, req.SessionID, llmOut.HowToFix)
 	}()
 	wg.Wait()
+
 	pwJSON, _ := json.Marshal(problemWords)
 	rec := &model.PronunciationRecord{
 		ID:            uuid.New(),
