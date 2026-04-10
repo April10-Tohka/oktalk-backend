@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -189,7 +191,7 @@ type PronunciationEvaluateRequest struct {
 
 // EvaluationBlock 评测结果块
 type EvaluationBlock struct {
-	RawScore     float32  `json:"raw_score"`
+	RawScore     float64  `json:"raw_score"`
 	Stars        int      `json:"stars"`
 	ProblemWords []string `json:"problem_words"`
 }
@@ -198,7 +200,7 @@ type EvaluationBlock struct {
 type AIFeedbackBlock struct {
 	Encourage  string `json:"encourage"`
 	ProblemTip string `json:"problem_tip"`
-	Suggestion string `json:"suggestion"`
+	HowToFix   string `json:"how_to_fix"`
 	AiAudioURL string `json:"ai_audio_url"`
 }
 
@@ -296,24 +298,29 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 
 	}
 
-	rawScore := float32(evalResult.TotalScore)
-	rawScore = clampFloat32(rawScore, 0, 5)
-	stars := int(math.Round(float64(rawScore)))
+	rawScore := evalResult.TotalScore
+	rawScore = clampFloat64(rawScore, 0, 5)
+	stars := int(math.Round(rawScore))
 	stars = clampInt(stars, 0, 5)
 
 	problemWords := collectProblemWords(evalResult.Words)
+	correctionInput := buildCorrectionInput(item.Content, practiceType, evalResult)
 
+	// 上传用户音频到oss
 	userAudioURL := ""
-	key := fmt.Sprintf("pronunciation/%s/%d_%s.wav", req.SessionID, req.ItemID, uuid.New())
-	if url, upErr := s.ossProvider.UploadAudio(ctx, key, req.AudioData); upErr != nil {
-		s.logger.Warn("pronunciation v2 user audio upload failed", slog.String("error", upErr.Error()))
-	} else {
-		userAudioURL = url
-	}
+	go func() {
+		key := fmt.Sprintf("pronunciation/%s/%d_user_%s.wav", req.SessionID, req.ItemID, uuid.New())
+		if url, upErr := s.ossProvider.UploadAudio(ctx, key, req.AudioData); upErr != nil {
+			s.logger.Warn("pronunciation v2 user audio upload failed", slog.String("error", upErr.Error()))
+		} else {
+			userAudioURL = url
+		}
+	}()
 
-	llmOut := s.buildFeedbackLLMWithCache(ctx, sess.UnitID, req.ItemID, item.Content, practiceType, rawScore, stars, problemWords)
+	llmOut := s.buildFeedbackLLMWithCache(ctx, sess.UnitID, req.ItemID, item.Content, practiceType, rawScore, stars, correctionInput)
 
-	ttsText := strings.TrimSpace(llmOut.Encourage + " " + llmOut.ProblemTip + " " + llmOut.Suggestion)
+	// tts
+	ttsText := strings.TrimSpace(llmOut.Encourage + " " + llmOut.ProblemTip + " " + llmOut.Retry)
 	aiAudioURL := s.synthPronAudioWithCache(ctx, req.SessionID, ttsText)
 
 	pwJSON, _ := json.Marshal(problemWords)
@@ -331,13 +338,13 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 		UserAudioURL:  userAudioURL,
 		AIEncourage:   llmOut.Encourage,
 		AIProblemTip:  llmOut.ProblemTip,
-		AISuggestion:  llmOut.Suggestion,
+		AIHowToFix:    llmOut.HowToFix,
 		AIAudioURL:    aiAudioURL,
 		IsRejected:    evalResult.IsRejected,
-		AccuracyScore: clampFloat32(float32(evalResult.AccuracyScore), 0, 5),
-		Fluency:       clampFloat32(float32(evalResult.FluencyScore), 0, 5),
-		Integrity:     clampFloat32(float32(evalResult.IntegrityScore), 0, 5),
-		StandardScore: clampFloat32(float32(evalResult.StandardScore), 0, 5),
+		AccuracyScore: clampFloat64(evalResult.AccuracyScore, 0, 5),
+		Fluency:       clampFloat64(evalResult.FluencyScore, 0, 5),
+		Integrity:     clampFloat64(evalResult.IntegrityScore, 0, 5),
+		StandardScore: clampFloat64(evalResult.StandardScore, 0, 5),
 	}
 	go func(r *model.PronunciationRecord) {
 		ctx2, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -362,7 +369,7 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 		AIFeedback: AIFeedbackBlock{
 			Encourage:  llmOut.Encourage,
 			ProblemTip: llmOut.ProblemTip,
-			Suggestion: llmOut.Suggestion,
+			HowToFix:   llmOut.HowToFix,
 			AiAudioURL: aiAudioURL,
 		},
 		RecommendAdvance: recommend,
@@ -378,6 +385,121 @@ func xunfeiCategory(unitType string) string {
 	}
 }
 
+type PhonemeIssue struct {
+	Phoneme   string
+	IssueType string // "missed"(漏读) / "substituted"(替换) / "added"(增读)
+}
+
+type SentenceWordIssue struct {
+	Word      string
+	Score     float64
+	IssueType string // "not_pronounced"(根本没读) / "poor_score"(分数低)
+}
+
+// LLMCorrectionInput 传给LLM的结构化摘要（不传原始XML）
+type LLMCorrectionInput struct {
+	PracticeType string // "word" 或 "sentence"
+	Content      string // 原文
+	OverallScore float64
+	ScoreLevel   string // "excellent"/"good"/"fair"/"poor"
+
+	// 单词题用
+	WordPhonemeIssues []PhonemeIssue
+
+	// 句子题用
+	ProblemWords []SentenceWordIssue
+}
+
+// 解析evalResult为LLMCorrectionInput
+func buildCorrectionInput(content string, practiceType string, evalResult *domain.EvaluationResult) *LLMCorrectionInput {
+	input := &LLMCorrectionInput{
+		PracticeType: practiceType,
+		Content:      content,
+		OverallScore: evalResult.TotalScore,
+		ScoreLevel:   toScoreLevel(evalResult.TotalScore),
+	}
+
+	if practiceType == "word" {
+		input.WordPhonemeIssues = extractPhonemeIssues(evalResult.Words)
+	} else {
+		input.ProblemWords = extractSentenceWordIssues(evalResult.Words)
+	}
+
+	return input
+}
+
+func extractPhonemeIssues(words []domain.WordEvaluationResult) []PhonemeIssue {
+	var issues []PhonemeIssue
+	for _, word := range words {
+		for _, p := range word.Phonemes {
+			dp := p.DpMessage
+			if dp == 0 {
+				continue
+			}
+			issue := PhonemeIssue{Phoneme: p.Phoneme}
+			switch dp {
+			case 16:
+				// 引擎判断该单词或该音素漏读
+				issue.IssueType = "missed"
+			case 32:
+				// 引擎判断该单词或该音素增读
+				issue.IssueType = "added"
+			default:
+				issue.IssueType = "unknown"
+			}
+			issues = append(issues, issue)
+		}
+	}
+	return issues
+}
+
+func extractSentenceWordIssues(words []domain.WordEvaluationResult) []SentenceWordIssue {
+	// 过滤掉 sil/fil 等非内容词
+	var issues []SentenceWordIssue
+	for _, w := range words {
+		if w.Word == "sil" || w.Word == "fil" {
+			continue
+		}
+		// dp_message=16
+		if w.DpMessage == 16 {
+			issues = append(issues, SentenceWordIssue{
+				Word:      w.Word,
+				Score:     w.Score,
+				IssueType: "not_pronounced",
+			})
+		} else if w.Score < 2.0 && w.Score > 0 {
+			// 读了但分数很低
+			issues = append(issues, SentenceWordIssue{
+				Word:      w.Word,
+				Score:     w.Score,
+				IssueType: "poor_score",
+			})
+		}
+	}
+
+	// 按严重程度排序，取前2个
+	sort.Slice(issues, func(i, j int) bool {
+		return issues[i].Score < issues[j].Score
+	})
+	if len(issues) > 2 {
+		issues = issues[:2]
+	}
+	return issues
+}
+
+func toScoreLevel(score float64) string {
+	switch {
+	case score >= 4.0:
+		return "excellent"
+	case score >= 3.0:
+		return "good"
+	case score >= 2.0:
+		return "fair"
+	default:
+		return "poor"
+	}
+}
+
 // collectProblemWords 依据 domain.WordEvaluationResult.DpMessage：非 0 表示增漏读等问题
 func collectProblemWords(words []domain.WordEvaluationResult) []string {
 	var out []string
@@ -390,23 +512,20 @@ func collectProblemWords(words []domain.WordEvaluationResult) []string {
 }
 
 type llmFeedbackJSON struct {
-	Encourage  string `json:"encourage"`
-	ProblemTip string `json:"problem_tip"`
-	Suggestion string `json:"suggestion"`
+	Encourage  string `json:"encourage"`   // 鼓励，肯定亮点，1句
+	ProblemTip string `json:"problem_tip"` // 指出哪里不对，用孩子听得懂的语言，1句；无问题时为空
+	HowToFix   string `json:"how_to_fix"`  // 具体怎么发这个音，身体动作描述，1-2句
+	Retry      string `json:"retry"`       // 引导再试一次，1句
 }
 
-func (s *PronunciationService) buildFeedbackLLM(ctx context.Context, content, practiceType string, rawScore float32, stars int, problemWords []string) llmFeedbackJSON {
-	sys := `你是一位儿童英语发音老师，说话简短活泼，多用 emoji，语气鼓励正向。
-只能返回 JSON，不允许返回任何其他内容。`
-	usr := fmt.Sprintf(`小朋友正在练习英语发音。
-练习内容：%s（%s）
-总体评分：%.1f/5，对应%d颗星
-有发音问题的词：%v（空列表表示全部正确）
-
-请生成一段发音反馈，只返回如下 JSON：
-{"encourage":"鼓励语，一句话，10词以内","problem_tip":"问题提示，一句话；无问题词时写 Everything sounds great!","suggestion":"建议，一句话，简单可操作"}`,
-		content, practiceType, rawScore, stars, problemWords)
-
+func (s *PronunciationService) buildFeedbackLLM(
+	ctx context.Context,
+	rawScore float64,
+	stars int,
+	input *LLMCorrectionInput,
+) llmFeedbackJSON {
+	sys := `你是一位儿童英语发音老师，说话简短活泼，语气鼓励正向。只能返回 JSON，不允许返回任何其他内容。`
+	usr := buildPromptBody(input, rawScore, stars)
 	raw, err := s.llmProvider.Chat(ctx, sys, usr)
 	if err != nil {
 		s.logger.Warn("pronunciation v2 feedback LLM failed", slog.String("error", err.Error()))
@@ -421,22 +540,107 @@ func (s *PronunciationService) buildFeedbackLLM(ctx context.Context, content, pr
 	return out
 }
 
-func fallbackFeedback(stars int) llmFeedbackJSON {
-	if stars >= 4 {
-		return llmFeedbackJSON{
-			Encourage:  "Great job! 🌟",
-			ProblemTip: "Everything sounds great!",
-			Suggestion: "Keep it up!",
+func buildPromptBody(input *LLMCorrectionInput, rawScore float64, stars int) string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("练习内容：\"%s\"（%s）\n", input.Content, practiceTypeCN(input.PracticeType)))
+	sb.WriteString(fmt.Sprintf("得分：%.1f/5.0，%d颗星（%s）\n\n", rawScore, stars, input.ScoreLevel))
+
+	// 问题描述部分，单词题和句子题分开写
+	if input.PracticeType == "word" {
+		if len(input.WordPhonemeIssues) == 0 {
+			sb.WriteString("发音情况：所有音素发音正确，整体很好！\n")
+		} else {
+			sb.WriteString("有问题的音素：\n")
+			for _, p := range input.WordPhonemeIssues {
+				sb.WriteString(fmt.Sprintf("- /%s/ ：%s\n", p.Phoneme, issueTypeCN(p.IssueType)))
+			}
+		}
+	} else {
+		if len(input.ProblemWords) == 0 {
+			sb.WriteString("发音情况：整句发音不错，没有明显问题词！\n")
+		} else {
+			sb.WriteString("需要重点练习的单词：\n")
+			for _, w := range input.ProblemWords {
+				sb.WriteString(fmt.Sprintf("- %s ：%s\n", w.Word, issueTypeCN(w.IssueType)))
+			}
 		}
 	}
-	return llmFeedbackJSON{
-		Encourage:  "Good try! 💪",
-		ProblemTip: "Let's practice more!",
-		Suggestion: "Listen and try again! 🎧",
+
+	sb.WriteString(`
+现在请你作为儿童英语老师，用最简单活泼的语气，给小朋友反馈。
+
+严格只返回以下JSON格式，不要加任何其他文字，不要解释：
+
+{
+  "encourage": "先夸奖孩子，找一个亮点，8-12个字",
+  "problem_tip": "用孩子能听懂的话说哪里不对，最多12个字。没有问题就填空字符串",
+  "how_to_fix": "教孩子嘴巴、舌头怎么动，动作要清楚具体，10-18个字。没有问题就填空字符串",
+  "retry": "鼓励孩子再读一次，活泼一点，6-10个字"
+}
+
+例子1（单词 dog，oo音不好）：
+{
+  "encourage": "哇，dog读得很有精神！",
+  "problem_tip": "中间的 oo 音有点太紧了",
+  "how_to_fix": "嘴巴张大一点，像医生说 ah—— 那样",
+  "retry": "来，我们再试一次！"
+}
+
+例子2（句子整体很好）：
+{
+  "encourage": "你读得真棒！声音好清楚！",
+  "problem_tip": "",
+  "how_to_fix": "",
+  "retry": "再读一遍给老师听听～"
+}
+`)
+
+	return sb.String()
+}
+
+func practiceTypeCN(t string) string {
+	if t == "word" {
+		return "单词朗读"
+	}
+	return "句子朗读"
+}
+
+func issueTypeCN(t string) string {
+	switch t {
+	case "missed":
+		return "这个音漏掉了，没有读出来"
+	case "substituted":
+		return "这个音读错了"
+	case "added":
+		return "多读了一个不该有的音"
+	case "not_pronounced":
+		return "这个词没被读出来"
+	case "poor_score":
+		return "这个词发音得分很低"
+	default:
+		return "发音有问题"
 	}
 }
 
-func clampFloat32(v, min, max float32) float32 {
+func fallbackFeedback(stars int) llmFeedbackJSON {
+	if stars >= 4 {
+		return llmFeedbackJSON{
+			Encourage:  "读得很棒！⭐",
+			ProblemTip: "",
+			HowToFix:   "",
+			Retry:      "再来一遍，更棒！",
+		}
+	}
+	return llmFeedbackJSON{
+		Encourage:  "敢开口就是进步！💪",
+		ProblemTip: "跟着示范再听一遍。",
+		HowToFix:   "慢慢来，一个音一个音练。",
+		Retry:      "再试一次，你可以的！",
+	}
+}
+
+func clampFloat64(v, min, max float64) float64 {
 	if v < min {
 		return min
 	}
@@ -458,35 +662,54 @@ func clampInt(v, min, max int) int {
 
 // scoreBucket 将 rawScore 按 0.5 分一档分桶，用于缓存 key 生成
 // 例如：3.7 → "3.5"，4.2 → "4.0"，5.0 → "5.0"
-func scoreBucket(score float32) string {
-	bucketed := math.Floor(float64(score)*2) / 2
+func scoreBucket(score float64) string {
+	bucketed := math.Floor(score*2) / 2
 	return fmt.Sprintf("%.1f", bucketed)
 }
 
-// problemWordsKey 对问题词列表排序后生成 MD5，保证 key 稳定
-func problemWordsKey(words []string) string {
-	sorted := make([]string, len(words))
-	copy(sorted, words)
-	sort.Strings(sorted)
-	return md5str(strings.Join(sorted, ","))
+// correctionFingerprint 根据 correctionInput 生成问题指纹
+// 单词题：音素列表的 MD5，如  "g:missed,th:added" 得到相同指纹
+// 句子题：问题词+类型的 MD5，如 "beginning:not_pronounced,breath:poor_score"
+func correctionFingerprint(input *LLMCorrectionInput) string {
+	var parts []string
+
+	if input.PracticeType == "word" {
+		for _, p := range input.WordPhonemeIssues {
+			parts = append(parts, p.Phoneme+":"+p.IssueType)
+		}
+	} else {
+		for _, w := range input.ProblemWords {
+			parts = append(parts, w.Word+":"+w.IssueType)
+		}
+	}
+
+	// 排序保证相同问题不同顺序得到相同 key
+	sort.Strings(parts)
+	raw := strings.Join(parts, ",")
+	if raw == "" {
+		raw = "no_problem"
+	}
+	sum := md5.Sum([]byte(raw))
+	return hex.EncodeToString(sum[:])
 }
 
 // buildFeedbackLLMWithCache 带 Redis 缓存的 LLM 发音反馈生成
-// Key 格式：pron:llm:feedback:{unitID}:{itemID}:{practiceType}:{scoreBucket}:{problemWordsMD5}
+// Key 格式：pron:llm:feedback:{unitID}:{itemID}:{practiceType}:{scoreBucket}:{correctionFingerprint}
 // TTL：7天（相同题目、相同分档、相同错误词，反馈固定）
 func (s *PronunciationService) buildFeedbackLLMWithCache(
 	ctx context.Context,
 	unitID string,
 	itemID int,
-	content, practiceType string,
-	rawScore float32,
+	content string,
+	practiceType string,
+	rawScore float64,
 	stars int,
-	problemWords []string,
+	correctionInput *LLMCorrectionInput,
 ) llmFeedbackJSON {
 	bucket := scoreBucket(rawScore)
-	pwKey := problemWordsKey(problemWords)
+	fingerprint := correctionFingerprint(correctionInput)
 	key := fmt.Sprintf("pron:llm:feedback:%s:%d:%s:%s:%s",
-		unitID, itemID, practiceType, bucket, pwKey)
+		unitID, itemID, practiceType, bucket, fingerprint)
 
 	if val, err := s.cache.Get(ctx, key); err == nil {
 		var cached llmFeedbackJSON
@@ -496,7 +719,7 @@ func (s *PronunciationService) buildFeedbackLLMWithCache(
 		}
 	}
 
-	result := s.buildFeedbackLLM(ctx, content, practiceType, rawScore, stars, problemWords)
+	result := s.buildFeedbackLLM(ctx, rawScore, stars, correctionInput)
 
 	if b, err := json.Marshal(result); err == nil {
 		if err := s.cache.Set(ctx, key, string(b), 7*24*time.Hour); err != nil {
@@ -526,9 +749,7 @@ func (s *PronunciationService) synthPronAudioWithCache(
 		return val
 	}
 
-	opts := domain.DefaultSynthesizeOptions()
-	opts.Format = "wav"
-	audio, err := s.ttsProvider.Synthesize(ctx, ttsText, opts)
+	audio, err := s.ttsProvider.Synthesize(ctx, ttsText, nil)
 	if err != nil {
 		s.logger.Warn("pronunciation v2 TTS failed", slog.String("error", err.Error()))
 		return ""
