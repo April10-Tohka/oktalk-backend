@@ -105,6 +105,16 @@ func NewSession(
 	}
 }
 
+// buildUserProfile 从 Session 信息构建用户画像
+// P0 阶段返回默认值；P2 阶段可改为从 Redis 加载持久化画像
+func (s *Session) buildUserProfile() UserProfile {
+	return UserProfile{
+		// TODO P2: 从用户服务加载真实姓名和年龄
+		Name:     "",
+		AgeGroup: "6-12", // 默认全段，后续细化
+	}
+}
+
 func (s *Session) Run() error {
 	rawAudioChan := make(chan []byte, 1024)           // App音频 → vadSendGoroutine
 	asrAudioChan := make(chan []byte, 8)              // vadRecvGoroutine → asrGoroutine（完整句子PCM）
@@ -317,11 +327,11 @@ func (s *Session) llmGoroutine(
 	ttsNewTurnChan chan<- struct{},
 	writeChan chan<- wsMessage,
 ) {
-	systemPrompt := "You are a helpful assistant for English learning. Please provide concise and encouraging responses to help the user practice English speaking."
+	profile := s.buildUserProfile()
 
-	convID, err := s.llmProvider.NewConversation(s.ctx, systemPrompt)
+	memory, err := NewConversationMemory(s.ctx, s.llmProvider, profile)
 	if err != nil {
-		slog.Error("[FreeTalk-LLM] New conversation failed",
+		slog.Error("[FreeTalk-LLM] Init conversation memory failed",
 			"error", err,
 			"conversation_id", s.conversationID,
 		)
@@ -417,6 +427,12 @@ func (s *Session) llmGoroutine(
 					return
 				}
 
+				// ① 记录本轮用户输入（在调用 LLM 之前）
+				memory.OnUserInput(input)
+
+				// ② 取最新 convID（可能已被 rebuild 更新）
+				convID := memory.ConvID()
+
 				stream := s.llmProvider.ConversationChatStream(s.ctx, convID, input)
 				firstToken := true
 				for stream.Next() {
@@ -433,6 +449,9 @@ func (s *Session) llmGoroutine(
 								return
 							}
 						}
+						// ③ 追加 token 到记忆（用于生成摘要）
+						memory.OnAssistantToken(event.Delta)
+
 						// 发 token 给切分 goroutine
 						tokenChan <- event.Delta
 						// 同时转发给 App 显示实时字幕
@@ -444,6 +463,11 @@ func (s *Session) llmGoroutine(
 						slog.Info("[FreeTalk-LLM] LLM done")
 						// 发__END__通知切分 goroutine：本轮结束，flush 并发 IsDone
 						tokenChan <- "__END__"
+
+						// ④ 本轮完整回复已收到，提交记忆并触发重建检查
+						// 注意：必须在 __END__ 之后调用，确保 currentAssistant 已完整
+						// 使用 background context 避免 session ctx 取消时中断重建
+						memory.OnTurnComplete(context.Background())
 					}
 				}
 
