@@ -10,6 +10,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"pronunciation-correction-system/internal/config"
@@ -198,10 +199,11 @@ type EvaluationBlock struct {
 
 // AIFeedbackBlock AI 反馈
 type AIFeedbackBlock struct {
-	Encourage  string `json:"encourage"`
-	ProblemTip string `json:"problem_tip"`
-	HowToFix   string `json:"how_to_fix"`
-	AiAudioURL string `json:"ai_audio_url"`
+	Encourage   string `json:"encourage"`
+	ProblemTip  string `json:"problem_tip"`
+	HowToFix    string `json:"how_to_fix"`
+	AiAudioURL  string `json:"ai_audio_url"`
+	HowToFixURL string `json:"how_to_fix_url"`
 }
 
 // PronunciationEvaluateResponse 评测响应
@@ -306,9 +308,12 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 	problemWords := collectProblemWords(evalResult.Words)
 	correctionInput := buildCorrectionInput(item.Content, practiceType, evalResult)
 
+	var wg sync.WaitGroup
 	// 上传用户音频到oss
 	userAudioURL := ""
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		key := fmt.Sprintf("pronunciation/%s/%d_user_%s.wav", req.SessionID, req.ItemID, uuid.New())
 		if url, upErr := s.ossProvider.UploadAudio(ctx, key, req.AudioData); upErr != nil {
 			s.logger.Warn("pronunciation v2 user audio upload failed", slog.String("error", upErr.Error()))
@@ -321,8 +326,20 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 
 	// tts
 	ttsText := strings.TrimSpace(llmOut.Encourage + " " + llmOut.ProblemTip + " " + llmOut.Retry)
-	aiAudioURL := s.synthPronAudioWithCache(ctx, req.SessionID, ttsText)
+	var aiAudioURL string
+	var howToFixURL string
 
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		aiAudioURL = s.synthPronAudioWithCache(ctx, req.SessionID, ttsText)
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		howToFixURL = s.synthPronAudioWithCache(ctx, req.SessionID, llmOut.HowToFix)
+	}()
+	wg.Wait()
 	pwJSON, _ := json.Marshal(problemWords)
 	rec := &model.PronunciationRecord{
 		ID:            uuid.New(),
@@ -340,6 +357,7 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 		AIProblemTip:  llmOut.ProblemTip,
 		AIHowToFix:    llmOut.HowToFix,
 		AIAudioURL:    aiAudioURL,
+		HowToFixURL:   howToFixURL,
 		IsRejected:    evalResult.IsRejected,
 		AccuracyScore: clampFloat64(evalResult.AccuracyScore, 0, 5),
 		Fluency:       clampFloat64(evalResult.FluencyScore, 0, 5),
@@ -367,10 +385,11 @@ func (s *PronunciationService) Evaluate(ctx context.Context, req *PronunciationE
 			ProblemWords: problemWords,
 		},
 		AIFeedback: AIFeedbackBlock{
-			Encourage:  llmOut.Encourage,
-			ProblemTip: llmOut.ProblemTip,
-			HowToFix:   llmOut.HowToFix,
-			AiAudioURL: aiAudioURL,
+			Encourage:   llmOut.Encourage,
+			ProblemTip:  llmOut.ProblemTip,
+			HowToFix:    llmOut.HowToFix,
+			AiAudioURL:  aiAudioURL,
+			HowToFixURL: howToFixURL,
 		},
 		RecommendAdvance: recommend,
 	}, nil

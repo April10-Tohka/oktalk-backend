@@ -19,6 +19,7 @@ type PronunciationRecord struct {
 	AIProblemTip string  `gorm:"type:text"                         json:"ai_problem_tip"`
 	AIHowToFix   string  `gorm:"type:text"                         json:"ai_how_to_fix"`
 	AIAudioURL   string  `gorm:"type:varchar(500)"                 json:"ai_audio_url"`
+	HowToFixURL  string  `gorm:"type:varchar(500)"                 json:"how_to_fix_url"`
 	// IsRejected 科大讯飞是否拒识（统计时仅统计 false）
 	IsRejected bool `gorm:"type:boolean;not null;default:false;index" json:"is_rejected"`
 	// 细分维度 0.0-5.0（与讯飞评测一致）
