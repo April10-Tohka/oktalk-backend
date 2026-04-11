@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"pronunciation-correction-system/internal/domain"
@@ -136,7 +137,7 @@ func (s *Session) Run() error {
 	go s.writerGoroutine(writeChan)
 	go s.vadSendGoroutine(vadStream, rawAudioChan)
 	go s.vadRecvGoroutine(vadStream, asrAudioChan, writeChan)
-	go s.asrGoroutine(asrAudioChan, llmInputChan)
+	go s.asrGoroutine(asrAudioChan, llmInputChan, writeChan)
 	go s.llmGoroutine(llmInputChan, llmOutputChan, ttsNewTurnChan, writeChan)
 	go s.ttsGoroutine(llmOutputChan, ttsNewTurnChan, writeChan)
 
@@ -297,26 +298,72 @@ func (s *Session) vadRecvGoroutine(stream vadpb.VADService_StreamingVADClient, a
 }
 
 // ===================== ③ asrGoroutine =====================
-func (s *Session) asrGoroutine(audioChan <-chan []byte, llmInputChan chan<- string) {
+func (s *Session) asrGoroutine(audioChan <-chan []byte, llmInputChan chan<- string, writeChan chan<- wsMessage) {
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
 		case audio, ok := <-audioChan:
 			if !ok {
-				// audioChan 只有在Session结束时才会被关闭，正常情况下不应该发生
 				return
 			}
-			result, err := s.asrProvider.RecognizeAudio(s.ctx, audio)
+
+			// 1. 设置 ASR 子上下文超时
+			asrCtx, cancel := context.WithTimeout(s.ctx, 8*time.Second)
+			// 确保在这一轮逻辑结束（无论成功失败）后再释放资源
+			result, err := s.asrProvider.RecognizeAudio(asrCtx, audio)
+			cancel()
+
+			// 2. 错误处理
 			if err != nil {
-				slog.Error("[FreeTalk-ASR] ASR recognize audio failed",
-					"error", err,
-					"conversation_id", s.conversationID,
-				)
-				s.cancel()
+				var errMsg OutgoingMessage
+				if errors.Is(err, context.DeadlineExceeded) {
+					slog.Warn("[FreeTalk-ASR] ASR timeout", "conversation_id", s.conversationID)
+					errMsg = OutgoingMessage{
+						Type:    MsgTypeError,
+						Code:    "ASR_TIMEOUT",
+						Message: "Recognition timed out, please speak louder.",
+					}
+				} else {
+					slog.Error("[FreeTalk-ASR] ASR error", "error", err)
+					errMsg = OutgoingMessage{
+						Type:    MsgTypeError,
+						Code:    "ASR_INTERNAL_ERROR",
+						Message: "Speech recognition service unavailable.",
+					}
+				}
+
+				// 推送错误给 App
+				data, _ := json.Marshal(errMsg)
+				select {
+				case writeChan <- wsMessage{messageType: websocket.TextMessage, data: data}:
+				case <-s.ctx.Done():
+					return
+				}
+
+				// ！！！重要：报错了就不要再发给 llmInputChan 了
+				continue
+			}
+
+			// 3. 成功识别处理
+			if result == "" {
+				// 如果是没有识别出结果，发一个错误信号给 App，重置 UI 状态
+				errMsg := OutgoingMessage{
+					Type:    MsgTypeError,
+					Code:    "ASR_NO_RESULT",
+					Message: "没有听清，请再说一遍",
+				}
+				data, _ := json.Marshal(errMsg)
+				writeChan <- wsMessage{messageType: websocket.TextMessage, data: data}
+				continue
+			}
+
+			// 正常发送给 LLM
+			select {
+			case llmInputChan <- result:
+			case <-s.ctx.Done():
 				return
 			}
-			llmInputChan <- result
 		}
 	}
 }
