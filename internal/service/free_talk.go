@@ -15,6 +15,26 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// silenceTimeout 用户静默超时阈值
+// AI 说完后超过此时长没有 SPEECH_START，触发主动引导
+const silenceTimeout = 10 * time.Second
+
+// silenceTrigger 注入 llmInputChan 的内部触发词
+// llmGoroutine 检测到此值时跳过 memory.OnUserInput，直接生成引导语
+const silenceTrigger = "__SILENCE_PROMPT__"
+
+// App → 后端的 Text Frame 类型
+const (
+	// MsgTypeAudioPlaybackDone App 前端本轮音频播放完毕通知
+	// 收到此消息后 silenceWatcher 才开始计时，避免 AI 还在播放时误触发静默检测
+	MsgTypeAudioPlaybackDone = "audio_playback_done"
+)
+
+// IncomingMessage App 推给后端的 Text Frame 结构
+type IncomingMessage struct {
+	Type string `json:"type"`
+}
+
 // ===================== Text Frame 类型常量 =====================
 
 const (
@@ -24,14 +44,6 @@ const (
 	MsgTypeListening = "listening" // VAD 检测到用户开始说话（后端 → App）
 	MsgTypeThinking  = "thinking"  // VAD 检测到用户说话结束，后端开始处理（后端 → App）
 )
-
-// silenceTimeout 用户静默超时阈值
-// AI 说完后超过此时长没有 SPEECH_START，触发主动引导
-const silenceTimeout = 10 * time.Second
-
-// silenceTrigger 注入 llmInputChan 的内部触发词
-// llmGoroutine 检测到此值时跳过 memory.OnUserInput，直接生成引导语
-const silenceTrigger = "__SILENCE_PROMPT__"
 
 // ===================== 后端 → App（Text Frame）=====================
 
@@ -131,7 +143,7 @@ func (s *Session) Run() error {
 	llmOutputChan := make(chan domain.LLMChunk, 1024) // LLM goroutine → TTS goroutine（流式token投喂TTS）
 	writeChan := make(chan wsMessage, 1024)           // 所有goroutine → Writer goroutine（统一写App WebSocket）
 	ttsNewTurnChan := make(chan struct{}, 1024)       // LLM goroutine → TTS goroutine（触发新一轮TTS任务）
-	aiTurnDoneChan := make(chan struct{}, 8)          // TTS goroutine → silenceWatcherGoroutine（AI音频播完，开始计时）
+	aiTurnDoneChan := make(chan struct{}, 8)          // Reader goroutine → silenceWatcherGoroutine（AI音频播完，开始计时）
 	speechStartChan := make(chan struct{}, 8)         // vadRecvGoroutine → silenceWatcherGoroutine（用户开口，重置计时）
 	// 建立 VAD gRPC 双向流
 	vadStream, err := s.vadClient.StreamingVAD(s.ctx)
@@ -142,13 +154,13 @@ func (s *Session) Run() error {
 		return err
 	}
 
-	go s.readerGoroutine(rawAudioChan)
+	go s.readerGoroutine(rawAudioChan, aiTurnDoneChan)
 	go s.writerGoroutine(writeChan)
 	go s.vadSendGoroutine(vadStream, rawAudioChan)
 	go s.vadRecvGoroutine(vadStream, asrAudioChan, writeChan, speechStartChan)
 	go s.asrGoroutine(asrAudioChan, llmInputChan, writeChan)
 	go s.llmGoroutine(llmInputChan, llmOutputChan, ttsNewTurnChan, writeChan)
-	go s.ttsGoroutine(llmOutputChan, ttsNewTurnChan, writeChan, aiTurnDoneChan)
+	go s.ttsGoroutine(llmOutputChan, ttsNewTurnChan, writeChan)
 	go s.silenceWatcherGoroutine(aiTurnDoneChan, speechStartChan, llmInputChan)
 
 	<-s.ctx.Done()
@@ -188,7 +200,7 @@ func (s *Session) writerGoroutine(writeChan <-chan wsMessage) {
 // appReaderGoroutine 持续读取 App 发来的帧
 // Text Frame → 解析 IncomingMessage（start/stop 控制指令）
 // Binary Frame（PCM）→ 根据状态转发到 ASR 或丢弃
-func (s *Session) readerGoroutine(rawAudioChan chan<- []byte) {
+func (s *Session) readerGoroutine(rawAudioChan chan<- []byte, aiTurnDoneChan chan<- struct{}) {
 	defer s.cancel()
 
 	for {
@@ -210,9 +222,24 @@ func (s *Session) readerGoroutine(rawAudioChan chan<- []byte) {
 		}
 		switch messageType {
 		case websocket.TextMessage:
-			slog.Warn("[FreeTalk-Reader] Unexpected text frame from app, ignoring",
-				"data", string(data),
-			)
+			var msg IncomingMessage
+			if err := json.Unmarshal(data, &msg); err != nil {
+				slog.Warn("[FreeTalk-Reader] Failed to parse text frame, ignoring",
+					"raw", string(data), "error", err)
+				continue
+			}
+			switch msg.Type {
+			case MsgTypeAudioPlaybackDone:
+				// App 播放完毕 → 通知 silenceWatcher 开始 10s 静默计时
+				slog.Debug("[FreeTalk-Reader] Audio playback done, starting silence timer")
+				select {
+				case aiTurnDoneChan <- struct{}{}:
+				default:
+					// silenceWatcher 正在计时中（上一轮未超时），丢弃重复信号
+				}
+			default:
+				slog.Warn("[FreeTalk-Reader] Unknown text frame type, ignoring", "type", msg.Type)
+			}
 
 		case websocket.BinaryMessage:
 			select {
@@ -224,7 +251,6 @@ func (s *Session) readerGoroutine(rawAudioChan chan<- []byte) {
 		default:
 			slog.Warn("[FreeTalk-Reader] Unexpected message type",
 				"type", messageType,
-				"conversation_id", s.conversationID,
 			)
 		}
 	}
@@ -565,7 +591,7 @@ func (s *Session) llmGoroutine(
 	}()
 }
 
-func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnChan <-chan struct{}, writeChan chan<- wsMessage, aiTurnDoneChan chan<- struct{}) {
+func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnChan <-chan struct{}, writeChan chan<- wsMessage) {
 
 	// 启动一个goroutine，持续获取ttsNewTurnChan中的数据。
 	// 每当收到一个新事件，代表这是新的一轮tts合成音频的任务。需要发送run-task指令
@@ -680,14 +706,6 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 							writeChan <- wsMessage{messageType: websocket.TextMessage, data: turnEndData}
 							ttsConn.Close() // 确保连接被关闭
 
-							// 通知 silenceWatcher：AI 说完了，开始计时
-							select {
-							case aiTurnDoneChan <- struct{}{}:
-							default:
-								// silenceWatcher 忙或 channel 满时丢弃
-								// 极端情况：连续两轮 AI 快速说完，第二个信号丢弃无影响
-								// silenceWatcher 已在处理第一个信号的计时
-							}
 							return
 						}
 					}

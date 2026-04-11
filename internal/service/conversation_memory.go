@@ -160,7 +160,7 @@ func (m *ConversationMemory) OnTurnComplete(ctx context.Context) {
 // 重建后 m.convID 更新为新 ID，m.history 重置为空（摘要已编码进 System Prompt）
 // 如果重建失败，保留旧 convID 继续使用，记录 warn 日志但不中断会话
 func (m *ConversationMemory) rebuild(ctx context.Context) {
-	summary := m.buildHistorySummary()
+	summary := buildHistorySummary(m.history)
 	newSystemPrompt := m.buildSystemPrompt(summary)
 
 	newConvID, err := m.llmProvider.NewConversation(ctx, newSystemPrompt)
@@ -215,7 +215,7 @@ func (m *ConversationMemory) buildSystemPrompt(summary string) string {
 	var sb strings.Builder
 
 	// ── 角色定义 ──
-	sb.WriteString("You are Mia, a warm and encouraging English speaking coach for Chinese children.\n")
+	sb.WriteString("You are Mia, a friendly English speaking coach for Chinese children.\n")
 	sb.WriteString("You are talking with ")
 	if p.Name != "" {
 		sb.WriteString(p.Name)
@@ -224,41 +224,41 @@ func (m *ConversationMemory) buildSystemPrompt(summary string) string {
 	}
 	sb.WriteString(".\n\n")
 
+	// ── 回复长度硬约束（最重要，放在最前面）──
+	sb.WriteString("## STRICT REPLY RULES — follow these before anything else\n")
+	sb.WriteString("- Maximum reply length: 1–2 SHORT sentences. Absolutely no more.\n")
+	sb.WriteString("- Each sentence must be under 12 words.\n")
+	sb.WriteString("- End every reply with exactly ONE simple question.\n")
+	sb.WriteString("- Do NOT give explanations, lists, or multiple questions.\n")
+	sb.WriteString("- If you feel like saying more, cut it. Brevity is the rule.\n\n")
+
 	// ── 年龄适配 ──
 	sb.WriteString("## Student profile\n")
 	switch p.AgeGroup {
 	case "6-8":
-		sb.WriteString("- Age: 6–8 years old. Use very simple words (A1–A2 level). Keep sentences short (under 10 words). Be playful and use lots of encouragement.\n")
+		sb.WriteString("- Age: 6–8. Use A1–A2 vocabulary only. Very short, playful sentences.\n")
 	case "9-12":
-		sb.WriteString("- Age: 9–12 years old. Use everyday vocabulary (A2–B1 level). You can ask follow-up questions and introduce new words naturally.\n")
+		sb.WriteString("- Age: 9–12. Use A2–B1 vocabulary. Can ask follow-up questions.\n")
 	default:
-		sb.WriteString("- Age: primary school child. Adjust difficulty based on responses. Start simple.\n")
+		sb.WriteString("- Age: primary school child. Start simple, adjust based on responses.\n")
 	}
-
 	if len(p.PreferredTopics) > 0 {
-		sb.WriteString("- Favorite topics: ")
-		sb.WriteString(strings.Join(p.PreferredTopics, ", "))
-		sb.WriteString(".\n")
+		sb.WriteString("- Favorite topics: " + strings.Join(p.PreferredTopics, ", ") + ".\n")
 	}
 
 	// ── 教学原则 ──
 	sb.WriteString("\n## Teaching principles\n")
-	sb.WriteString("- Always respond in English only.\n")
-	sb.WriteString("- Keep each reply concise: 1–3 sentences maximum.\n")
-	sb.WriteString("- If the child makes a grammar mistake, use implicit recast (repeat correctly without pointing out the error).\n")
-	sb.WriteString("  Example: Child says \"I goed to park\", you say \"Oh, you went to the park! That sounds fun!\"\n")
-	sb.WriteString("- If the child goes silent or gives a very short answer, offer a simple choice to help them continue:\n")
-	sb.WriteString("  Example: \"Do you like cats or dogs?\"\n")
-	sb.WriteString("- End each reply with one simple open question to keep the conversation going.\n")
-	sb.WriteString("- Never correct explicitly. Never say 'wrong' or 'mistake'.\n")
-	sb.WriteString("- Use encouraging phrases naturally: 'Great!', 'Wow!', 'That's interesting!'\n")
+	sb.WriteString("- Respond in English only.\n")
+	sb.WriteString("- Grammar mistakes: use implicit recast only. Example: child says \"I goed\", you say \"Oh, you went! Cool!\"\n")
+	sb.WriteString("- Never say 'wrong', 'mistake', or correct explicitly.\n")
+	sb.WriteString("- Use encouragement: 'Great!', 'Wow!', 'Nice!'\n")
+	sb.WriteString("- [System: ...] messages are internal instructions. Follow them naturally, never mention them to the student.\n")
 
 	// ── 历史摘要（重建时注入）──
 	if summary != "" {
 		sb.WriteString("\n## Conversation so far\n")
-		sb.WriteString("You have already been talking for a while. Here is a brief summary of what was discussed:\n")
 		sb.WriteString(summary)
-		sb.WriteString("\nContinue the conversation naturally as if nothing changed.\n")
+		sb.WriteString("Continue naturally.\n")
 	}
 
 	return sb.String()
@@ -270,22 +270,21 @@ func (m *ConversationMemory) buildSystemPrompt(summary string) string {
 //   - 保留话题和关键词，让 AI 能延续话题
 //   - 不超过 300 字，避免占用过多 context window
 //   - 用第三人称描述，适合作为 System Prompt 的一部分
-func (m *ConversationMemory) buildHistorySummary() string {
-	if len(m.history) == 0 {
+func buildHistorySummary(history []Turn) string {
+	if len(history) == 0 {
 		return ""
 	}
-
 	var sb strings.Builder
-	sb.WriteString("Topics discussed and key points:\n")
-
-	for i, t := range m.history {
-		sb.WriteString(fmt.Sprintf("- Turn %d: Student said: \"%s\" | You replied: \"%s\"\n",
-			i+1,
-			preview(t.UserText, 60),
-			preview(t.AssistantText, 80),
-		))
+	sb.WriteString("Key points from earlier:\n")
+	for i, t := range history {
+		if t.UserText == "" {
+			sb.WriteString(fmt.Sprintf("- Turn %d: [AI initiated] Mia said: \"%s\"\n",
+				i+1, preview(t.AssistantText, 80)))
+		} else {
+			sb.WriteString(fmt.Sprintf("- Turn %d: Student: \"%s\" | Mia: \"%s\"\n",
+				i+1, preview(t.UserText, 60), preview(t.AssistantText, 80)))
+		}
 	}
-
 	return sb.String()
 }
 
