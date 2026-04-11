@@ -543,7 +543,7 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 			// 创建一个通道，用于接收task-started事件
 			taskStartedChan := make(chan struct{}, 1)
 			// 启动一个goroutine异步接收WebSocket消息
-			go func() {
+			go func(ttsConn *websocket.Conn) {
 				const pcmFlushThreshold = 8 * 1024 // 8KB，约 0.25 秒的 16kHz 单声道 PCM
 				var pcmBuffer []byte               // 新增 PCM 缓冲
 				for {
@@ -596,11 +596,12 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 							turnEndMsg := OutgoingMessage{Type: MsgTypeTurnEnd}
 							turnEndData, _ := json.Marshal(turnEndMsg)
 							writeChan <- wsMessage{messageType: websocket.TextMessage, data: turnEndData}
+							ttsConn.Close() // 确保连接被关闭
 							return
 						}
 					}
 				}
-			}()
+			}(ttsConn)
 			select {
 			case <-s.ctx.Done():
 				return
@@ -671,7 +672,7 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 					}
 				}
 			}
-			ttsConn.Close() // 确保连接被关闭
+
 		}
 	}
 }
