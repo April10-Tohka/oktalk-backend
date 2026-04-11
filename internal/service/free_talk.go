@@ -163,6 +163,7 @@ func (s *Session) Run() error {
 	go s.ttsGoroutine(llmOutputChan, ttsNewTurnChan, writeChan)
 	go s.silenceWatcherGoroutine(aiTurnDoneChan, speechStartChan, llmInputChan)
 
+	llmInputChan <- silenceTrigger
 	<-s.ctx.Done()
 	slog.Info("[FreeTalk] Session ending, closing channels")
 	// 统一关闭所有 channel，让各 goroutine 的 range 循环自然退出
