@@ -25,6 +25,14 @@ const (
 	MsgTypeThinking  = "thinking"  // VAD 检测到用户说话结束，后端开始处理（后端 → App）
 )
 
+// silenceTimeout 用户静默超时阈值
+// AI 说完后超过此时长没有 SPEECH_START，触发主动引导
+const silenceTimeout = 10 * time.Second
+
+// silenceTrigger 注入 llmInputChan 的内部触发词
+// llmGoroutine 检测到此值时跳过 memory.OnUserInput，直接生成引导语
+const silenceTrigger = "__SILENCE_PROMPT__"
+
 // ===================== 后端 → App（Text Frame）=====================
 
 // OutgoingMessage 后端推给 App 的 Text Frame 结构
@@ -123,7 +131,8 @@ func (s *Session) Run() error {
 	llmOutputChan := make(chan domain.LLMChunk, 1024) // LLM goroutine → TTS goroutine（流式token投喂TTS）
 	writeChan := make(chan wsMessage, 1024)           // 所有goroutine → Writer goroutine（统一写App WebSocket）
 	ttsNewTurnChan := make(chan struct{}, 1024)       // LLM goroutine → TTS goroutine（触发新一轮TTS任务）
-
+	aiTurnDoneChan := make(chan struct{}, 8)          // TTS goroutine → silenceWatcherGoroutine（AI音频播完，开始计时）
+	speechStartChan := make(chan struct{}, 8)         // vadRecvGoroutine → silenceWatcherGoroutine（用户开口，重置计时）
 	// 建立 VAD gRPC 双向流
 	vadStream, err := s.vadClient.StreamingVAD(s.ctx)
 	if err != nil {
@@ -136,10 +145,11 @@ func (s *Session) Run() error {
 	go s.readerGoroutine(rawAudioChan)
 	go s.writerGoroutine(writeChan)
 	go s.vadSendGoroutine(vadStream, rawAudioChan)
-	go s.vadRecvGoroutine(vadStream, asrAudioChan, writeChan)
+	go s.vadRecvGoroutine(vadStream, asrAudioChan, writeChan, speechStartChan)
 	go s.asrGoroutine(asrAudioChan, llmInputChan, writeChan)
 	go s.llmGoroutine(llmInputChan, llmOutputChan, ttsNewTurnChan, writeChan)
-	go s.ttsGoroutine(llmOutputChan, ttsNewTurnChan, writeChan)
+	go s.ttsGoroutine(llmOutputChan, ttsNewTurnChan, writeChan, aiTurnDoneChan)
+	go s.silenceWatcherGoroutine(aiTurnDoneChan, speechStartChan, llmInputChan)
 
 	<-s.ctx.Done()
 	slog.Info("[FreeTalk] Session ending, closing channels")
@@ -150,6 +160,8 @@ func (s *Session) Run() error {
 	close(llmInputChan)
 	close(llmOutputChan)
 	close(ttsNewTurnChan)
+	close(aiTurnDoneChan)
+	close(speechStartChan)
 	close(writeChan)
 	return nil
 }
@@ -246,8 +258,8 @@ func (s *Session) vadSendGoroutine(stream vadpb.VADService_StreamingVADClient, r
 	}
 }
 
-// vadRecvGoroutine 从 VAD gRPC 服务接收事件，分发到 writeChan / asrAudioChan
-func (s *Session) vadRecvGoroutine(stream vadpb.VADService_StreamingVADClient, asrAudioChan chan<- []byte, writeChan chan<- wsMessage) {
+// vadRecvGoroutine 从 VAD gRPC 服务接收事件，分发到 writeChan / asrAudioChan / speechStartChan
+func (s *Session) vadRecvGoroutine(stream vadpb.VADService_StreamingVADClient, asrAudioChan chan<- []byte, writeChan chan<- wsMessage, speechStartChan chan<- struct{}) {
 	for {
 		event, err := stream.Recv()
 		if err != nil {
@@ -273,6 +285,13 @@ func (s *Session) vadRecvGoroutine(stream vadpb.VADService_StreamingVADClient, a
 			case writeChan <- wsMessage{messageType: websocket.TextMessage, data: data}:
 			case <-s.ctx.Done():
 				return
+			}
+			// 通知 silenceWatcher：用户已开口，重置静默计时器
+			select {
+			case speechStartChan <- struct{}{}:
+			default:
+				// channel 已满时丢弃，不阻塞 VAD 处理
+				// silenceWatcher 只需要"有没有开口"的边沿信号，不需要精确计数
 			}
 
 		case vadpb.VADEvent_SPEECH_END:
@@ -309,7 +328,7 @@ func (s *Session) asrGoroutine(audioChan <-chan []byte, llmInputChan chan<- stri
 			}
 
 			// 1. 设置 ASR 子上下文超时
-			asrCtx, cancel := context.WithTimeout(s.ctx, 8*time.Second)
+			asrCtx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
 			// 确保在这一轮逻辑结束（无论成功失败）后再释放资源
 			result, err := s.asrProvider.RecognizeAudio(asrCtx, audio)
 			cancel()
@@ -474,8 +493,21 @@ func (s *Session) llmGoroutine(
 					return
 				}
 
-				// ① 记录本轮用户输入（在调用 LLM 之前）
-				memory.OnUserInput(input)
+				// 判断是否为静默触发的主动引导，而非用户真实输入
+				isSilenceTrigger := input == silenceTrigger
+
+				if isSilenceTrigger {
+					// 静默触发：不记录为用户输入，直接用记忆生成引导语
+					// 使用专门的引导 prompt，让 AI 基于已有上下文主动发起话题
+					input = memory.BuildSilencePrompt()
+					slog.Info("[FreeTalk-LLM] Silence trigger: injecting topic prompt",
+						"conv_id", memory.ConvID(),
+						"turn", memory.turnCount,
+					)
+				} else {
+					// 正常用户输入：记录到记忆
+					memory.OnUserInput(input)
+				}
 
 				// ② 取最新 convID（可能已被 rebuild 更新）
 				convID := memory.ConvID()
@@ -511,6 +543,9 @@ func (s *Session) llmGoroutine(
 						// 发__END__通知切分 goroutine：本轮结束，flush 并发 IsDone
 						tokenChan <- "__END__"
 
+						// 静默触发的回复：OnUserInput 没有调用，所以 pendingUserText 为空
+						// OnTurnComplete 会将空 UserText + AI回复 存入 history，这是合理
+
 						// ④ 本轮完整回复已收到，提交记忆并触发重建检查
 						// 注意：必须在 __END__ 之后调用，确保 currentAssistant 已完整
 						// 使用 background context 避免 session ctx 取消时中断重建
@@ -530,7 +565,7 @@ func (s *Session) llmGoroutine(
 	}()
 }
 
-func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnChan <-chan struct{}, writeChan chan<- wsMessage) {
+func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnChan <-chan struct{}, writeChan chan<- wsMessage, aiTurnDoneChan chan<- struct{}) {
 
 	// 启动一个goroutine，持续获取ttsNewTurnChan中的数据。
 	// 每当收到一个新事件，代表这是新的一轮tts合成音频的任务。需要发送run-task指令
@@ -644,6 +679,15 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 							turnEndData, _ := json.Marshal(turnEndMsg)
 							writeChan <- wsMessage{messageType: websocket.TextMessage, data: turnEndData}
 							ttsConn.Close() // 确保连接被关闭
+
+							// 通知 silenceWatcher：AI 说完了，开始计时
+							select {
+							case aiTurnDoneChan <- struct{}{}:
+							default:
+								// silenceWatcher 忙或 channel 满时丢弃
+								// 极端情况：连续两轮 AI 快速说完，第二个信号丢弃无影响
+								// silenceWatcher 已在处理第一个信号的计时
+							}
 							return
 						}
 					}
@@ -720,6 +764,83 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 				}
 			}
 
+		}
+	}
+}
+
+// ===================== ⑤ silenceWatcherGoroutine =====================
+
+// silenceWatcherGoroutine 监听静默状态，在 AI 说完后用户长时间未开口时主动触发引导
+//
+// 状态机：
+//
+//	初始状态：等待（不计时）
+//	收到 aiTurnDoneChan → 启动 10s 计时器
+//	计时期间收到 speechStartChan → 重置（停止计时，等待下一次 AI 说完）
+//	计时器到期 → 向 llmInputChan 注入 silenceTrigger，然后重置等待
+func (s *Session) silenceWatcherGoroutine(
+	aiTurnDoneChan <-chan struct{},
+	speechStartChan <-chan struct{},
+	llmInputChan chan<- string,
+) {
+	// 用一个停止状态的 timer，避免 select 在未激活时命中 timer.C
+	timer := time.NewTimer(silenceTimeout)
+	timer.Stop()
+	// 清空可能的初始 tick（Stop 不保证 drain）
+	select {
+	case <-timer.C:
+	default:
+	}
+
+	timerActive := false
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			timer.Stop()
+			return
+
+		case _, ok := <-aiTurnDoneChan:
+			if !ok {
+				return
+			}
+			// AI 说完了，启动静默计时器
+			if !timer.Stop() && timerActive {
+				// 安全 drain：仅在之前是激活状态时才 drain
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(silenceTimeout)
+			timerActive = true
+			slog.Debug("[FreeTalk-Silence] Timer started", "timeout", silenceTimeout)
+
+		case _, ok := <-speechStartChan:
+			if !ok {
+				return
+			}
+			// 用户开口了，停止计时
+			if timerActive {
+				timer.Stop()
+				// 同样安全 drain
+				select {
+				case <-timer.C:
+				default:
+				}
+				timerActive = false
+				slog.Debug("[FreeTalk-Silence] Timer reset: user started speaking")
+			}
+
+		case <-timer.C:
+			// 静默超时，触发主动引导
+			timerActive = false
+			slog.Info("[FreeTalk-Silence] Silence timeout, injecting prompt")
+			select {
+			case llmInputChan <- silenceTrigger:
+			case <-s.ctx.Done():
+				return
+			}
 		}
 	}
 }

@@ -12,9 +12,6 @@ import (
 // ===================== 常量配置 =====================
 
 const (
-	// maxTurns 滑动窗口最大轮数（一轮 = 用户说一次 + AI 回一次）
-	// 超过此值时触发对话重建，将历史压缩为摘要注入新 System Prompt
-	maxTurns = 6
 
 	// rebuildThreshold 触发重建的轮数阈值，略小于 maxTurns
 	// 在第 rebuildThreshold 轮结束后就预先重建，避免最后一轮才重建带来的延迟
@@ -185,6 +182,28 @@ func (m *ConversationMemory) rebuild(ctx context.Context) {
 	m.convID = newConvID
 	// 清空已被摘要化的历史，从零开始积累新窗口
 	m.history = m.history[:0]
+}
+
+func (m *ConversationMemory) BuildSilencePrompt() string {
+	var sb strings.Builder
+	sb.WriteString("[System: The student has been silent for a while. ")
+
+	if len(m.history) == 0 {
+		sb.WriteString("This is the start of the conversation and the student hasn't spoken yet. ")
+		sb.WriteString("Please greet them warmly and ask one simple, fun question to get started. ")
+		sb.WriteString("For example, ask about their favorite animal, color, or what they did today.]")
+	} else {
+		lastTurn := m.history[len(m.history)-1]
+		sb.WriteString("Please gently re-engage the student. ")
+		if lastTurn.AssistantText != "" {
+			sb.WriteString(fmt.Sprintf("Your last message was: \"%s\". ", preview(lastTurn.AssistantText, 80)))
+		}
+		sb.WriteString("Either follow up on a topic from the conversation, ")
+		sb.WriteString("or introduce a new fun topic suitable for a child. ")
+		sb.WriteString("Keep it simple, warm, and end with one easy question.]")
+	}
+
+	return sb.String()
 }
 
 // buildSystemPrompt 组装完整的 System Prompt
