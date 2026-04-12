@@ -116,6 +116,8 @@ func Migrate(db *gorm.DB) error {
 		// 发音纠正 v2
 		&model.PronunciationSession{},
 		&model.PronunciationRecord{},
+		&model.FreeTalkSession{},
+		&model.FreeTalkMessage{},
 	)
 }
 
