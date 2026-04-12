@@ -592,6 +592,7 @@ func (s *Session) llmGoroutine(
 				} else {
 					// 正常用户输入：记录到记忆
 					memory.OnUserInput(input)
+					s.turnCount++
 				}
 
 				// ② 取最新 convID（可能已被 rebuild 更新）
