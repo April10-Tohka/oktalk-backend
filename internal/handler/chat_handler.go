@@ -369,3 +369,26 @@ func (h *ChatHandler) HandleWebSocket(c *gin.Context) {
 		"conversation_id": conversationID,
 	})
 }
+
+func (h *ChatHandler) HandleFreeTalkSummary(c *gin.Context) {
+	type summaryRequest struct {
+		SessionID string `json:"session_id" binding:"required"`
+	}
+	var req summaryRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.ErrorContext(c.Request.Context(), "handle free talk summary bind json failed", "error", err)
+		BadRequest(c, "invalid request body: "+err.Error())
+		return
+	}
+	userID, exists := c.Get("user_id")
+	if !exists {
+		Unauthorized(c)
+		return
+	}
+	result, err := h.chatService.GetFreetalkSummary(c.Request.Context(), req.SessionID, userID.(string))
+	if err != nil {
+		InternalError(c, err.Error())
+		return
+	}
+	OK(c, result)
+}

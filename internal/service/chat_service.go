@@ -177,6 +177,9 @@ type ChatService interface {
 
 	// HandleFreetalk 处理 free talk 模式语音对话请求
 	HandleFreetalk(ctx context.Context, req *HandleFreetalkRequest) error
+
+	// GetFreetalkSummary 获取 free talk 模式语音对话摘要
+	GetFreetalkSummary(ctx context.Context, sessionID, userID string) (*SessionSummaryResponse, error)
 }
 
 // ===== Service 实现 =====
@@ -775,6 +778,176 @@ func (s *chatServiceImpl) HandleFreetalk(ctx context.Context, req *HandleFreetal
 	)
 	go session.Run()
 	return nil
+}
+
+// SummaryContent LLM 生成的结构化摘要，字段全部为中文
+type SummaryContent struct {
+	Topic         string   `json:"topic"`         // 本次对话主要话题，1句话
+	Highlights    []string `json:"highlights"`    // 孩子表现亮点，可为空数组
+	Suggestions   []string `json:"suggestions"`   // 建议练习的地方，可为空数组
+	Encouragement string   `json:"encouragement"` // 给孩子的鼓励评价，1-2句
+}
+
+// SessionSummaryResponse 摘要接口的完整响应体
+type SessionSummaryResponse struct {
+	SessionID string                  `json:"session_id"`
+	UserID    string                  `json:"user_id"`
+	StartedAt time.Time               `json:"started_at"`
+	EndedAt   *time.Time              `json:"ended_at"`
+	TurnCount int                     `json:"turn_count"`
+	Messages  []model.FreeTalkMessage `json:"messages"` // 完整对话记录，按 seq 升序
+	Summary   SummaryContent          `json:"summary"`
+}
+
+func (s *chatServiceImpl) GetFreetalkSummary(ctx context.Context, sessionID, userID string) (*SessionSummaryResponse, error) {
+
+	dsn := "tohka:Tohka10xiang@tcp(8.155.145.36:3306)/oktalk?charset=utf8mb4&parseTime=True&loc=Local"
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		logger.Error("start session failed to connect database", "error", err)
+	}
+	// 校验 session 存在
+	// 2. 第一次查询：校验 Session 存在且属于该用户
+	var session model.FreeTalkSession
+	err = db.WithContext(ctx).
+		Where("session_id = ? AND user_id = ?", sessionID, userID).
+		First(&session).Error
+
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("session not found or access denied")
+		}
+		return nil, fmt.Errorf("query session error: %v", err)
+	}
+	// 读取完整消息记录
+	var messages []model.FreeTalkMessage
+	err = db.WithContext(ctx).
+		Where("session_id = ?", sessionID).
+		Order("seq asc"). // 必须按序号升序，确保摘要逻辑正确
+		Find(&messages).Error
+
+	if err != nil {
+		return nil, fmt.Errorf("query messages error: %v", err)
+	}
+	// ── 3. 调 LLM 生成结构化摘要 ────────────────────────────────
+	summaryContent, err := s.generateSummary(ctx, messages)
+	if err != nil {
+		// 摘要生成失败时降级：只返回对话记录，摘要字段给默认值
+		slog.Warn("[SummaryService] LLM summary failed, returning degraded response",
+			"error", err,
+			"session_id", sessionID,
+		)
+		summaryContent = SummaryContent{
+			Topic:         "本次对话",
+			Highlights:    []string{},
+			Suggestions:   []string{},
+			Encouragement: "你很棒，继续加油！",
+		}
+	}
+	return &SessionSummaryResponse{
+		SessionID: sessionID,
+		UserID:    userID,
+		StartedAt: session.StartedAt,
+		EndedAt:   session.EndedAt,
+		TurnCount: session.TurnCount,
+		Messages:  messages,
+		Summary:   summaryContent,
+	}, nil
+}
+
+func (s *chatServiceImpl) generateSummary(ctx context.Context, messages []model.FreeTalkMessage) (SummaryContent, error) {
+	if len(messages) == 0 {
+		return SummaryContent{
+			Topic:         "对话内容较少",
+			Highlights:    []string{},
+			Suggestions:   []string{},
+			Encouragement: "期待下次更长的对话！",
+		}, nil
+	}
+	userPrompt := buildSummaryUserPrompt(messages)
+
+	raw, err := s.llmProvider.Chat(ctx, summarySystemPrompt(), userPrompt)
+	if err != nil {
+		return SummaryContent{}, fmt.Errorf("llm chat failed: %w", err)
+	}
+
+	return parseSummaryJSON(raw)
+}
+
+// summarySystemPrompt 摘要生成专用的 System Prompt，独立于对话用的 System Prompt
+func summarySystemPrompt() string {
+	return `You are an English learning coach assistant.
+Your task is to analyze a conversation between an AI English coach named Mia and a Chinese child, then generate a session summary for parents.
+ 
+IMPORTANT: You must respond with ONLY a valid JSON object. No markdown fences, no explanation, no extra text before or after.
+ 
+The JSON must follow this exact structure:
+{
+  "topic": "本次对话的主要话题（1句话）",
+  "highlights": ["亮点1", "亮点2"],
+  "suggestions": ["建议1"],
+  "encouragement": "给孩子的鼓励评价（1-2句，温暖友好）"
+}
+ 
+Rules:
+- All field values must be in Chinese
+- topic: one sentence describing the main subject discussed
+- highlights: specific things the child did well — vocabulary used, sentences formed, topics engaged with. Empty array [] if nothing notable
+- suggestions: specific areas to practice next time. Empty array [] if no clear suggestions  
+- encouragement: always positive and warm, suitable for a child aged 6-12
+- If the conversation is very short (less than 3 child utterances), still provide warm encouraging feedback`
+}
+
+// buildSummaryUserPrompt 将消息列表格式化为 LLM 可读的对话文本
+func buildSummaryUserPrompt(messages []model.FreeTalkMessage) string {
+	var sb strings.Builder
+	sb.WriteString("Here is the conversation to analyze:\n\n")
+
+	for _, msg := range messages {
+		switch msg.Role {
+		case model.MessageRoleUser:
+			sb.WriteString(fmt.Sprintf("Child: %s\n", msg.Content))
+		case model.MessageRoleAssistant:
+			sb.WriteString(fmt.Sprintf("Mia (AI Coach): %s\n", msg.Content))
+		}
+	}
+
+	sb.WriteString("\nPlease generate the session summary JSON now.")
+	return sb.String()
+}
+
+// parseSummaryJSON 解析 LLM 返回的 JSON 字符串，容错处理 markdown 包裹
+func parseSummaryJSON(raw string) (SummaryContent, error) {
+	raw = strings.TrimSpace(raw)
+	// 去掉 LLM 可能添加的 markdown 代码块包裹
+	raw = strings.TrimPrefix(raw, "```json")
+	raw = strings.TrimPrefix(raw, "```")
+	raw = strings.TrimSuffix(raw, "```")
+	raw = strings.TrimSpace(raw)
+
+	var content SummaryContent
+	if err := json.Unmarshal([]byte(raw), &content); err != nil {
+		return SummaryContent{}, fmt.Errorf("unmarshal summary JSON failed: %w (raw preview: %s)", err, previewStr(raw, 200))
+	}
+
+	// 保证数组字段非 nil，前端 JSON 序列化时 [] 而非 null
+	if content.Highlights == nil {
+		content.Highlights = []string{}
+	}
+	if content.Suggestions == nil {
+		content.Suggestions = []string{}
+	}
+
+	return content, nil
+}
+
+// previewStr 截取字符串前 n 个字符用于日志输出
+func previewStr(s string, n int) string {
+	runes := []rune(strings.TrimSpace(s))
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n]) + "…"
 }
 
 // ===================== ChatTaskProcessor =====================

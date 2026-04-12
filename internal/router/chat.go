@@ -30,6 +30,7 @@ func setupChatRoutes(rg *gin.RouterGroup, h *handler.ChatHandler) {
 
 		// free talk 模式的语音对话
 		chat.GET("/freetalk", h.HandleWebSocket)
+		chat.POST("/freetalk/summary", h.HandleFreeTalkSummary)
 	}
 }
 
