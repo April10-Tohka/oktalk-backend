@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"os"
 	"path/filepath"
 
 	"github.com/redis/go-redis/v9"
@@ -203,7 +204,10 @@ func (a *App) initInfrastructure() {
 	}
 
 	// VAD gRPC 客户端（可选，地址可通过配置指定）
-	vadAddr := "localhost:50051"
+	vadAddr := os.Getenv("VAD_ADDR")
+	if vadAddr == "" {
+		vadAddr = "localhost:50051" // 本地开发默认值
+	}
 	vadClient, err := infraVAD.NewVADClient(vadAddr)
 	if err != nil {
 		log.Printf("[App] Warning: VAD client init failed: %v, FreeTalk VAD unavailable", err)
