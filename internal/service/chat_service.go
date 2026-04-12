@@ -21,6 +21,8 @@ import (
 	"pronunciation-correction-system/internal/worker"
 
 	"github.com/gorilla/websocket"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
 )
 
 // ===== 请求结构 =====
@@ -261,6 +263,19 @@ func (s *chatServiceImpl) StartSession(ctx context.Context, req *StartSessionReq
 		logger.ErrorContext(ctx, "start session create conversation failed", "error", err)
 		return nil, err
 	}
+	freeTalkSession := &model.FreeTalkSession{
+		ID:        uuid.New(),
+		SessionID: sessionId,
+		UserID:    req.UserID,
+		StartedAt: time.Now(),
+	}
+	dsn := "tohka:Tohka10xiang@tcp(8.155.145.36:3306)/oktalk?charset=utf8mb4&parseTime=True&loc=Local"
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		logger.ErrorContext(ctx, "start session failed to connect database", "error", err)
+		return nil, err
+	}
+	db.Create(freeTalkSession)
 
 	return &StartSessionResponse{
 		SessionId: sessionId,

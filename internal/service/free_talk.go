@@ -8,11 +8,15 @@ import (
 	"log/slog"
 	"pronunciation-correction-system/internal/domain"
 	"pronunciation-correction-system/internal/infrastructure/vad/vadpb"
+	"pronunciation-correction-system/internal/model"
+	"pronunciation-correction-system/internal/pkg/logger"
 	"pronunciation-correction-system/internal/pkg/uuid"
 	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
 )
 
 // silenceTimeout 用户静默超时阈值
@@ -94,6 +98,14 @@ type Session struct {
 	// VAD gRPC 客户端
 	vadClient vadpb.VADServiceClient
 
+	// msgSeq 消息序号计数器，从 1 开始，每次 SaveMessage 前自增
+	// 仅由 llmGoroutine 内单个 goroutine 写，无并发竞争
+	msgSeq int
+
+	// turnCount AI 回复条数，Session 结束时写入数据库
+	// 含开场白和静默触发的主动发言
+	turnCount int
+
 	// 会话信息
 	conversationID string
 	userID         string
@@ -133,6 +145,40 @@ func (s *Session) buildUserProfile() UserProfile {
 		// TODO P2: 从用户服务加载真实姓名和年龄
 		Name:     "",
 		AgeGroup: "6-12", // 默认全段，后续细化
+	}
+}
+
+// saveMessage 写入单条消息到数据库
+// 使用 context.Background() 确保 session ctx 取消后仍能完成写入
+// role 取值: user | assistant
+func (s *Session) saveMessage(role, content string) {
+	if content == "" {
+		return
+	}
+	dsn := "tohka:Tohka10xiang@tcp(8.155.145.36:3306)/oktalk?charset=utf8mb4&parseTime=True&loc=Local"
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		logger.Error("start session failed to connect database", "error", err)
+	}
+	s.msgSeq++
+	freeTalkMsg := &model.FreeTalkMessage{
+		ID:        uuid.New(),
+		SessionID: s.conversationID,
+		Seq:       s.msgSeq,
+		Role:      role,
+		Content:   content,
+	}
+	err = db.Create(freeTalkMsg).Error
+	if err != nil {
+		// 写入失败不中断对话，只记录日志
+		slog.Error("[FreeTalk] SaveMessage failed",
+			"error", err,
+			"session_id", s.conversationID,
+			"role", role,
+			"seq", s.msgSeq,
+		)
+		// 回退序号，下次重试时不跳号（保持 seq 连续）
+		s.msgSeq--
 	}
 }
 
@@ -176,6 +222,17 @@ func (s *Session) Run() error {
 	close(aiTurnDoneChan)
 	close(speechStartChan)
 	close(writeChan)
+	dsn := "tohka:Tohka10xiang@tcp(8.155.145.36:3306)/oktalk?charset=utf8mb4&parseTime=True&loc=Local"
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		logger.Error("start session failed to connect database", "error", err)
+	}
+	updateCol := map[string]interface{}{
+		"ended_at":   time.Now(),
+		"turn_count": s.turnCount,
+	}
+	db.Model(&model.FreeTalkSession{}).Where("session_id = ?", s.conversationID).Updates(updateCol)
+	slog.Info("[FreeTalk] Session ended")
 	return nil
 }
 
@@ -403,6 +460,7 @@ func (s *Session) asrGoroutine(audioChan <-chan []byte, llmInputChan chan<- stri
 				writeChan <- wsMessage{messageType: websocket.TextMessage, data: data}
 				continue
 			}
+			s.saveMessage(model.MessageRoleUser, result)
 
 			// 正常发送给 LLM
 			select {
@@ -566,6 +624,7 @@ func (s *Session) llmGoroutine(
 						writeChan <- wsMessage{messageType: websocket.TextMessage, data: data}
 
 					case "response.output_text.done":
+						s.saveMessage(model.MessageRoleAssistant, memory.currentAssistant.String())
 						slog.Info("[FreeTalk-LLM] LLM done")
 						// 发__END__通知切分 goroutine：本轮结束，flush 并发 IsDone
 						tokenChan <- "__END__"
