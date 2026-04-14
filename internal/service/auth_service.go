@@ -127,12 +127,12 @@ type AuthService interface {
 // ===================== 实现 =====================
 
 type authServiceImpl struct {
-	database      *gorm.DB
-	rdb           *redis.Client
-	repos         *db.Repositories
-	smsClient     sms.Client
-	wechatClient  domain.WechatClient
-	logger        *slog.Logger
+	database     *gorm.DB
+	rdb          *redis.Client
+	repos        *db.Repositories
+	smsClient    sms.Client
+	wechatClient domain.WechatClient
+	logger       *slog.Logger
 }
 
 // NewAuthService 创建 AuthService
@@ -298,13 +298,14 @@ func (s *authServiceImpl) SMSLogin(ctx context.Context, req *SMSLoginRequest) (*
 
 		err = s.database.Transaction(func(tx *gorm.DB) error {
 			txRepos := s.repos.WithTx(tx)
-
+			avatarURL := "https://oktalk.oss-cn-heyuan.aliyuncs.com/assets/images/default_user_avatar.jpg"
 			newUser := &model.User{
 				ID:             userID,
 				Username:       username,
 				Phone:          &phone,
 				Status:         "active",
 				RegisterSource: "sms",
+				AvatarURL:      &avatarURL,
 			}
 			if err := txRepos.User.Create(ctx, newUser); err != nil {
 				return err
