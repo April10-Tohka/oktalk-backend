@@ -32,28 +32,28 @@ type UpdateProfileRequest struct {
 
 // UserProfileResponse 用户信息响应
 type UserProfileResponse struct {
-	UserID    string  `json:"user_id"`
-	Username  string  `json:"username"`
-	Phone     string  `json:"phone,omitempty"` // 脱敏后
-	AvatarURL *string `json:"avatar_url,omitempty"`
-	Status    string  `json:"status"`
-	Grade     *int    `json:"grade,omitempty"`
-	CreatedAt string  `json:"created_at"`
+	UserID    string             `json:"user_id"`
+	Username  string             `json:"username"`
+	Phone     string             `json:"phone,omitempty"` // 脱敏后
+	AvatarURL *string            `json:"avatar_url,omitempty"`
+	Status    string             `json:"status"`
+	Grade     *int               `json:"grade,omitempty"`
+	CreatedAt string             `json:"created_at"`
 	Profile   *UserProfileDetail `json:"profile,omitempty"`
 }
 
 // UserProfileDetail 用户扩展信息
 type UserProfileDetail struct {
-	Age                    *int     `json:"age,omitempty"`
-	Gender                 *string  `json:"gender,omitempty"`
-	Bio                    *string  `json:"bio,omitempty"`
-	TotalConversations     int      `json:"total_conversations"`
-	TotalEvaluations       int      `json:"total_evaluations"`
-	TotalReports           int      `json:"total_reports"`
-	TotalStudyMinutes      int      `json:"total_study_minutes"`
-	AverageEvaluationScore float64  `json:"average_evaluation_score"`
-	LastConversationAt     *string  `json:"last_conversation_at,omitempty"`
-	LastEvaluationAt       *string  `json:"last_evaluation_at,omitempty"`
+	Age                    *int    `json:"age,omitempty"`
+	Gender                 *string `json:"gender,omitempty"`
+	Bio                    *string `json:"bio,omitempty"`
+	TotalConversations     int     `json:"total_conversations"`
+	TotalEvaluations       int     `json:"total_evaluations"`
+	TotalReports           int     `json:"total_reports"`
+	TotalStudyMinutes      int     `json:"total_study_minutes"`
+	AverageEvaluationScore float64 `json:"average_evaluation_score"`
+	LastConversationAt     *string `json:"last_conversation_at,omitempty"`
+	LastEvaluationAt       *string `json:"last_evaluation_at,omitempty"`
 }
 
 // ===================== Service 接口 =====================
@@ -212,8 +212,8 @@ func (s *userServiceImpl) UpdateProfile(ctx context.Context, req *UpdateProfileR
 		}
 	}
 	if req.Gender != nil {
-		if *req.Gender != "male" && *req.Gender != "female" {
-			return nil, &AuthError{Code: 400, Message: "性别只能是 male 或 female"}
+		if *req.Gender != "boy" && *req.Gender != "girl" {
+			return nil, &AuthError{Code: 400, Message: "性别只能是 boy 或 girl"}
 		}
 	}
 	if req.Bio != nil {
