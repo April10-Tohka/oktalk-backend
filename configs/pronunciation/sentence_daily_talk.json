@@ -8,17 +8,17 @@
     {
       "id": 1,
       "content": "What is your name?",
-      "standard_audio_url": "https://oss.example.com/pronunciation/standard/what_is_your_name.mp3"
+      "standard_audio_url": "https://oktalk.oss-cn-heyuan.aliyuncs.com/pronunciation/standard/Whatisyourname.wav"
     },
     {
       "id": 2,
       "content": "How old are you?",
-      "standard_audio_url": "https://oss.example.com/pronunciation/standard/how_old_are_you.mp3"
+      "standard_audio_url": "https://oktalk.oss-cn-heyuan.aliyuncs.com/pronunciation/standard/Howoldareyou.wav"
     },
     {
       "id": 3,
       "content": "I like English very much!",
-      "standard_audio_url": "https://oss.example.com/pronunciation/standard/i_like_english.mp3"
+      "standard_audio_url": "https://oktalk.oss-cn-heyuan.aliyuncs.com/pronunciation/standard/IlikeEnglishverymuch.wav"
     }
   ]
 }

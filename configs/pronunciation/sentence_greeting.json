@@ -8,17 +8,17 @@
     {
       "id": 1,
       "content": "Good morning, how are you?",
-      "standard_audio_url": "https://oss.example.com/pronunciation/standard/good_morning.mp3"
+      "standard_audio_url": "https://oktalk.oss-cn-heyuan.aliyuncs.com/pronunciation/standard/Goodmorninghowareyou.wav"
     },
     {
       "id": 2,
       "content": "Nice to meet you!",
-      "standard_audio_url": "https://oss.example.com/pronunciation/standard/nice_to_meet_you.mp3"
+      "standard_audio_url": "https://oktalk.oss-cn-heyuan.aliyuncs.com/pronunciation/standard/nicetomeetyou.wav"
     },
     {
       "id": 3,
       "content": "See you tomorrow!",
-      "standard_audio_url": "https://oss.example.com/pronunciation/standard/see_you_tomorrow.mp3"
+      "standard_audio_url": "https://oktalk.oss-cn-heyuan.aliyuncs.com/pronunciation/standard/Seeyoutomorrow.wav"
     }
   ]
 }

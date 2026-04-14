@@ -8,17 +8,17 @@
     {
       "id": 1,
       "content": "Can I have the menu, please?",
-      "standard_audio_url": "https://oss.example.com/pronunciation/standard/can_i_have_menu.mp3"
+      "standard_audio_url": "https://oktalk.oss-cn-heyuan.aliyuncs.com/pronunciation/standard/CanIhavethemenuplease.wav"
     },
     {
       "id": 2,
       "content": "I would like a burger, please!",
-      "standard_audio_url": "https://oss.example.com/pronunciation/standard/i_would_like_burger.mp3"
+      "standard_audio_url": "https://oktalk.oss-cn-heyuan.aliyuncs.com/pronunciation/standard/Iwouldlikeaburgerplease.wav"
     },
     {
       "id": 3,
       "content": "Can I have the bill, please?",
-      "standard_audio_url": "https://oss.example.com/pronunciation/standard/can_i_have_bill.mp3"
+      "standard_audio_url": "https://oktalk.oss-cn-heyuan.aliyuncs.com/pronunciation/standard/CanIhavethebillplease.wav"
     }
   ]
 }
