@@ -87,9 +87,17 @@ type WeChatConfig struct {
 
 // SMSConfig 短信服务配置
 type SMSConfig struct {
-	ActiveProvider string `mapstructure:"active_provider"` // 短信服务商标识（目前实现 mock）
-	SignName       string `mapstructure:"sign_name"`       // 短信签名
-	TemplateCode   string `mapstructure:"template_code"`   // 验证码模板 ID
+	ActiveProvider string          `mapstructure:"active_provider"` // 短信服务商标识（mock, aliyun）
+	Aliyun         AliyunSMSConfig `mapstructure:"aliyun"`
+}
+
+// AliyunSMSConfig 阿里云短信服务配置
+type AliyunSMSConfig struct {
+	AccessKeyID     string `mapstructure:"access_key_id"`
+	AccessKeySecret string `mapstructure:"access_key_secret"`
+	Endpoint        string `mapstructure:"endpoint"`
+	SignName        string `mapstructure:"sign_name"`
+	TemplateCode    string `mapstructure:"template_code"`
 }
 
 // LogConfig 日志配置

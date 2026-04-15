@@ -96,6 +96,9 @@ func setDefaults(v *viper.Viper) {
 	// OSS 默认配置
 	v.SetDefault("oss.active_provider", "aliyun")
 
+	// SMS 默认配置
+	v.SetDefault("sms.active_provider", "aliyun")
+
 	// JWT 默认配置
 	v.SetDefault("jwt.expire_hours", 24)
 	v.SetDefault("jwt.access_secret", "oktalk-access-secret-change-me")
