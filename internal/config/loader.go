@@ -15,9 +15,6 @@ import (
 func Load() (*Config, error) {
 	v := viper.New()
 
-	// 设置默认值
-	setDefaults(v)
-
 	// 获取运行环境
 	env := os.Getenv("APP_ENV")
 	if env == "" {
@@ -36,7 +33,6 @@ func Load() (*Config, error) {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, fmt.Errorf("failed to read config file: %w", err)
 		}
-		// 配置文件不存在时使用默认值和环境变量
 	}
 
 	// 绑定环境变量
@@ -50,90 +46,4 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 	return &cfg, nil
-}
-
-// setDefaults 设置配置默认值
-func setDefaults(v *viper.Viper) {
-	// 服务器默认配置
-	v.SetDefault("server.port", 8080)
-	v.SetDefault("server.mode", "debug")
-	v.SetDefault("server.name", "pronunciation-correction-system")
-	v.SetDefault("server.environment", "development")
-
-	// 数据库默认配置
-	v.SetDefault("database.host", "localhost")
-	v.SetDefault("database.port", 3306)
-	v.SetDefault("database.user", "root")
-	v.SetDefault("database.password", "")
-	v.SetDefault("database.dbname", "pronunciation_db")
-	v.SetDefault("database.max_idle_conns", 10)
-	v.SetDefault("database.max_open_conns", 100)
-
-	// Redis 默认配置
-	v.SetDefault("redis.host", "localhost")
-	v.SetDefault("redis.port", 6379)
-	v.SetDefault("redis.password", "")
-	v.SetDefault("redis.db", 0)
-
-	// LLM 默认配置
-	v.SetDefault("llm.active_provider", "qwen")
-	v.SetDefault("llm.qwen.model", "qwen-turbo")
-
-	// ASR 默认配置
-	v.SetDefault("asr.active_provider", "xunfei")
-
-	// TTS 默认配置
-	v.SetDefault("tts.active_provider", "aliyun")
-	v.SetDefault("tts.aliyun.model", "cosyvoice-v3-flash")
-	v.SetDefault("tts.aliyun.region", "beijing")
-	v.SetDefault("tts.aliyun.default_options.voice", "longanyang")
-	v.SetDefault("tts.aliyun.default_options.format", "mp3")
-	v.SetDefault("tts.aliyun.default_options.sample_rate", 22050)
-	v.SetDefault("tts.aliyun.default_options.volume", 50)
-	v.SetDefault("tts.aliyun.default_options.rate", 1.0)
-	v.SetDefault("tts.aliyun.default_options.pitch", 1.0)
-
-	// OSS 默认配置
-	v.SetDefault("oss.active_provider", "aliyun")
-
-	// SMS 默认配置
-	v.SetDefault("sms.active_provider", "aliyun")
-
-	// JWT 默认配置
-	v.SetDefault("jwt.expire_hours", 24)
-	v.SetDefault("jwt.access_secret", "oktalk-access-secret-change-me")
-	v.SetDefault("jwt.refresh_secret", "oktalk-refresh-secret-change-me")
-	v.SetDefault("jwt.access_ttl", 7200)       // 2 小时
-	v.SetDefault("jwt.refresh_ttl", 2592000)    // 30 天
-
-	// 微信配置
-	v.SetDefault("wechat.app_id", "")
-	v.SetDefault("wechat.app_secret", "")
-
-	// 短信配置
-	v.SetDefault("sms.active_provider", "mock")
-	v.SetDefault("sms.sign_name", "OKTalk")
-	v.SetDefault("sms.template_code", "")
-
-	// 日志默认配置
-	v.SetDefault("log.environment", "development")
-	v.SetDefault("log.level", "debug")
-	v.SetDefault("log.console.enabled", true)
-	v.SetDefault("log.console.colorful", true)
-	v.SetDefault("log.file.enabled", true)
-	v.SetDefault("log.file.filename", "logs/app.log")
-	v.SetDefault("log.file.max_size", 100)
-	v.SetDefault("log.file.max_backups", 30)
-	v.SetDefault("log.file.max_age", 7)
-	v.SetDefault("log.file.compress", true)
-
-	// Free Talk 默认配置
-	v.SetDefault("freetalk.system_prompt", "You are a friendly English tutor for children. Speak in simple, encouraging English. Help the child practice spoken English through natural conversation. Keep responses short and age-appropriate.")
-	v.SetDefault("freetalk.tts_voice", "longxiaochun")
-	v.SetDefault("freetalk.tts_format", "pcm")
-	v.SetDefault("freetalk.tts_sample_rate", 16000)
-	v.SetDefault("freetalk.asr_format", "pcm")
-	v.SetDefault("freetalk.asr_sample_rate", 16000)
-	v.SetDefault("freetalk.text_flush_len", 20)
-	v.SetDefault("freetalk.max_turn_history", 10)
 }

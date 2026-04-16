@@ -71,12 +71,10 @@ type RedisConfig struct {
 
 // JWTConfig JWT 认证配置
 type JWTConfig struct {
-	Secret        string `mapstructure:"secret"`         // 兼容旧配置（不再使用）
-	ExpireHours   int    `mapstructure:"expire_hours"`   // 兼容旧配置（不再使用）
 	AccessSecret  string `mapstructure:"access_secret"`  // Access Token 签名密钥
 	RefreshSecret string `mapstructure:"refresh_secret"` // Refresh Token 签名密钥（与 Access 分开）
-	AccessTTL     int    `mapstructure:"access_ttl"`     // Access Token 有效期，单位秒，默认 7200
-	RefreshTTL    int    `mapstructure:"refresh_ttl"`    // Refresh Token 有效期，单位秒，默认 2592000（30天）
+	AccessTTL     int    `mapstructure:"access_ttl"`     // Access Token 有效期，单位秒，默认 31536000（1年）
+	RefreshTTL    int    `mapstructure:"refresh_ttl"`    // Refresh Token 有效期，单位秒，默认 63072000（2年）
 }
 
 // WeChatConfig 微信开放平台配置
@@ -134,26 +132,6 @@ type FileConfig struct {
 	MaxAge int `yaml:"max_age" mapstructure:"max_age"`
 	// 是否压缩旧日志文件
 	Compress bool `yaml:"compress" mapstructure:"compress"`
-}
-
-// DefaultConfig 默认日志配置
-func DefaultConfig() *LogConfig {
-	return &LogConfig{
-		Environment: "development",
-		Level:       "debug",
-		Console: ConsoleConfig{
-			Enabled:  true,
-			Colorful: true,
-		},
-		File: FileConfig{
-			Enabled:    true,
-			Filename:   "logs/app.log",
-			MaxSize:    100,
-			MaxBackups: 30,
-			MaxAge:     7,
-			Compress:   true,
-		},
-	}
 }
 
 // ===================== LLM 大语言模型 =====================
