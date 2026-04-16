@@ -195,6 +195,14 @@ func (s *authServiceImpl) SendSMS(ctx context.Context, req *SendSMSRequest) (*Se
 	// 4. 生成 6 位随机数字验证码
 	code := fmt.Sprintf("%06d", rand.Intn(1000000))
 
+	// 7. 发送短信
+	result, err := s.smsClient.Send(req.Phone, code)
+	if err != nil {
+		s.logger.Error("sms send failed", slog.String("error", err.Error()))
+		return nil, &AuthError{Code: 500, Message: "发送验证码失败"}
+	}
+	code = result.VerifyCode
+
 	// 5. 存储验证码到 Redis
 	codeKey := fmt.Sprintf(cache.KeySMSCode, req.Phone)
 	codeVal := smsCodeValue{Code: code, AttemptCount: 0}
@@ -206,12 +214,6 @@ func (s *authServiceImpl) SendSMS(ctx context.Context, req *SendSMSRequest) (*Se
 
 	// 6. 设置间隔锁
 	s.rdb.Set(ctx, intervalKey, "1", cache.TTLSMSInterval)
-
-	// 7. 发送短信（mock 模式仅打印日志）
-	if err := s.smsClient.Send(req.Phone, code); err != nil {
-		s.logger.Error("sms send failed", slog.String("error", err.Error()))
-		return nil, &AuthError{Code: 500, Message: "发送验证码失败"}
-	}
 
 	// 8. 返回
 	return &SendSMSResponse{
@@ -227,7 +229,7 @@ func (s *authServiceImpl) SMSLogin(ctx context.Context, req *SMSLoginRequest) (*
 	if !phoneRegexp.MatchString(req.Phone) {
 		return nil, &AuthError{Code: 400, Message: "手机号格式不正确"}
 	}
-	if len(req.Code) != 6 {
+	if len(req.Code) != 4 {
 		return nil, &AuthError{Code: 400, Message: "验证码格式不正确"}
 	}
 
