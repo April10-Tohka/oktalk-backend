@@ -16,6 +16,7 @@ import (
 
 	"pronunciation-correction-system/internal/domain"
 	"pronunciation-correction-system/internal/handler/middleware"
+	pkgjwt "pronunciation-correction-system/internal/pkg/jwt"
 	"pronunciation-correction-system/internal/pkg/logger"
 	"pronunciation-correction-system/internal/service"
 )
@@ -282,28 +283,11 @@ func (h *ChatHandler) SubmitChatFeedback(c *gin.Context) {
 }
 
 func (h *ChatHandler) HandleWebSocket(c *gin.Context) {
-	// 1. 获取认证信息（由 Auth 中间件注入）
-	userID, exists := c.Get("user_id")
-	if !exists {
-		slog.Error("[FreeTalk] user_id missing in context")
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"code":    401,
-			"message": "未认证",
-		})
-		return
-	}
-	userIDStr, ok := userID.(string)
-	if !ok || userIDStr == "" {
-		slog.Error("[FreeTalk] user_id invalid")
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"code":    401,
-			"message": "用户信息无效",
-		})
-		return
-	}
+
 	// 2. 解析query获取conversation_id
 	type freetalkRequestBody struct {
-		SessionID string `form:"session_id" binding:"required"`
+		SessionID   string `form:"session_id" binding:"required"`
+		AccessToken string `form:"access_token" binding:"required"`
 	}
 	var reqBody freetalkRequestBody
 	if err := c.ShouldBindQuery(&reqBody); err != nil {
@@ -311,6 +295,7 @@ func (h *ChatHandler) HandleWebSocket(c *gin.Context) {
 		BadRequest(c, "invalid request body: "+err.Error())
 		return
 	}
+	slog.Info("查看websocket连接的参数", "session_id", reqBody.SessionID, "access_token", reqBody.AccessToken)
 	conversationID := reqBody.SessionID
 	if conversationID == "" {
 		slog.Error("[FreeTalk] missing conversation_id")
@@ -320,12 +305,23 @@ func (h *ChatHandler) HandleWebSocket(c *gin.Context) {
 		})
 		return
 	}
+	// 解析accesstoken
+	// 2. 解析 Access Token
+	claims, err := pkgjwt.ParseAccessToken(reqBody.AccessToken)
+	if err != nil {
+		slog.Warn("JWT parse failed", slog.String("error", err.Error()))
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+			"code": 401, "message": "请重新登录", "data": nil,
+		})
+		return
+	}
+	userIDStr := claims.UserID
 	slog.Info("[FreeTalk] request",
 		"user_id", userIDStr,
 		"conversation_id", conversationID,
 	)
 	// 3. 验证 free talk 模式语音对话请求
-	err := h.chatService.ValidateFreetalk(c.Request.Context(), &service.ValidateFreetalkRequest{
+	err = h.chatService.ValidateFreetalk(c.Request.Context(), &service.ValidateFreetalkRequest{
 		ConversationID: conversationID,
 		UserID:         userIDStr,
 	})

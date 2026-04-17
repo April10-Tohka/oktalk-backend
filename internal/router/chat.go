@@ -15,7 +15,7 @@ func setupChatRoutes(rg *gin.RouterGroup, h *handler.ChatHandler) {
 		// 同步语音对话
 		chat.POST("/MVP", h.ChatMVP)
 		// 启动新会话
-		chat.POST("/session/start", h.StartSession)
+		// chat.POST("/session/start", h.StartSession)
 		// 提交语音对话请求
 		chat.POST("/submit", h.SubmitChat)
 		// 查询语音对话处理结果

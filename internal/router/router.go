@@ -38,20 +38,20 @@ func Setup(cfg *config.Config, handlers *handler.Handlers, rdb *redis.Client) *g
 
 		// 系统状态路由（无需登录）
 		setupSystemRoutes(v1, handlers.System)
-
+		setupChatRoutes(v1, handlers.Chat) // AI 语音对话
 		// ── 需要认证的路由 ──
 		authed := v1.Group("")
 		authed.Use(middleware.Auth(cfg, rdb))
 		{
 			// 需要认证的 auth 路由（logout、token/refresh 由 auth 模块自行处理）
 			setupAuthProtectedRoutes(authed, handlers.Auth)
-			setupChatRoutes(authed, handlers.Chat)             // AI 语音对话
-			setupFreeTalkRoutes(authed, handlers.FreeTalk)     // Free Talk WebSocket
-			setupEvaluateRoutes(authed, handlers.Evaluate)     // AI 发音纠正
-			setupReportRoutes(authed, handlers.Report)         // 智能学习报告
-			setupUserRoutes(authed, handlers.User)             // 用户信息
-			setupResourceRoutes(authed, handlers.System)       // 学习资源
-			setupSceneRoutes(authed, handlers.Scene)             // 场景引导对话
+			authed.POST("/chat/session/start", handlers.Chat.StartSession)
+			setupFreeTalkRoutes(authed, handlers.FreeTalk)           // Free Talk WebSocket
+			setupEvaluateRoutes(authed, handlers.Evaluate)           // AI 发音纠正
+			setupReportRoutes(authed, handlers.Report)               // 智能学习报告
+			setupUserRoutes(authed, handlers.User)                   // 用户信息
+			setupResourceRoutes(authed, handlers.System)             // 学习资源
+			setupSceneRoutes(authed, handlers.Scene)                 // 场景引导对话
 			setupPronunciationRoutes(authed, handlers.Pronunciation) // 发音纠正 v2
 		}
 	}
