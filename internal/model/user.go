@@ -54,8 +54,8 @@ type UserProfile struct {
 	UserID string `gorm:"uniqueIndex;type:varchar(36);not null" json:"user_id" validate:"required,uuid"`
 	// Age 年龄
 	Age *int `gorm:"type:int" json:"age,omitempty" validate:"omitempty,min=1,max=150"`
-	// Gender 性别：male/female
-	Gender *string `gorm:"type:enum('male','female')" json:"gender,omitempty" validate:"omitempty,oneof=male female"`
+	// Gender 性别：boy/girl
+	Gender *string `gorm:"type:enum('boy','girl')" json:"gender,omitempty" validate:"omitempty,oneof=boy girl"`
 	// Bio 个人简介
 	Bio *string `gorm:"type:text" json:"bio,omitempty" validate:"omitempty,max=1000"`
 	// TotalConversations 总对话数
