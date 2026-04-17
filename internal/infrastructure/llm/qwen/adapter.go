@@ -134,6 +134,29 @@ func (a *QwenAdapter) ConversationChatStream(ctx context.Context, conversationID
 	return stream
 }
 
+func (a *QwenAdapter) ChatHistoryStream(ctx context.Context, messages []domain.Message) *ssestream.Stream[openai.ChatCompletionChunk] {
+	// 转换为 openai-go 的格式
+	MessagesParams := make([]openai.ChatCompletionMessageParamUnion, 0, len(messages))
+	for _, m := range messages {
+		switch m.Role {
+		case "system":
+			MessagesParams = append(MessagesParams, openai.SystemMessage(m.Content))
+		case "user":
+			MessagesParams = append(MessagesParams, openai.UserMessage(m.Content))
+		case "assistant":
+			MessagesParams = append(MessagesParams, openai.AssistantMessage(m.Content))
+		}
+	}
+	params := openai.ChatCompletionNewParams{
+		Model:           a.model,
+		Messages:        MessagesParams,
+		ReasoningEffort: shared.ReasoningEffortNone,
+	}
+	stream := a.client.Chat.Completions.NewStreaming(ctx, params)
+	return stream
+
+}
+
 // Close 关闭客户端，释放资源
 func (a *QwenAdapter) Close() error {
 	return a.qwenClient.close()

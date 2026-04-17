@@ -5,9 +5,15 @@ package domain
 import (
 	"context"
 
+	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/packages/ssestream"
 	"github.com/openai/openai-go/v3/responses"
 )
+
+type Message struct {
+	Role    string // "system" | "user" | "assistant"
+	Content string
+}
 
 // LLMProvider 大语言模型服务提供者接口
 // 用于生成发音反馈文本、对话等 AI 功能
@@ -25,6 +31,7 @@ type LLMProvider interface {
 	// ConversationChatStream 基于对话 ID 进行流式对话
 	ConversationChatStream(ctx context.Context, conversationID string, userMessage string) *ssestream.Stream[responses.ResponseStreamEventUnion]
 
+	ChatHistoryStream(ctx context.Context, messages []Message) *ssestream.Stream[openai.ChatCompletionChunk]
 	// Close 关闭客户端，释放资源
 	Close() error
 }
