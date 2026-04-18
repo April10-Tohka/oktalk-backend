@@ -42,14 +42,14 @@ type ConversationMemory struct {
 	// history 已完成的对话轮次（滑动窗口）
 	history []Turn
 
+	// messages  system + 历史轮次，直接喂给 ChatHistoryStream
+	messages []domain.Message
+
 	// pendingUserText 当前轮次用户的输入，等待 AI 回复后配对存入 history
 	pendingUserText string
 
 	// currentAssistant 当前轮次 AI 回复的累积文本（流式 token 逐步追加）
 	currentAssistant strings.Builder
-
-	// convID 当前有效的服务端对话 ID
-	convID string
 
 	// llmProvider 用于重建对话时调用 NewConversation
 	llmProvider domain.LLMProvider
@@ -84,31 +84,26 @@ type UserProfile struct {
 //   - profile: 用户画像
 //
 // 返回已初始化的 ConversationMemory，首次 System Prompt 已注入
-func NewConversationMemory(ctx context.Context, llmProvider domain.LLMProvider, profile UserProfile) (*ConversationMemory, error) {
+func NewConversationMemory(ctx context.Context, llmProvider domain.LLMProvider, profile UserProfile) *ConversationMemory {
 	m := &ConversationMemory{
 		llmProvider: llmProvider,
 		userProfile: profile,
 	}
 
 	systemPrompt := m.buildSystemPrompt("")
-	convID, err := llmProvider.NewConversation(ctx, systemPrompt)
-	if err != nil {
-		return nil, fmt.Errorf("conversation memory init failed: %w", err)
+	m.messages = []domain.Message{
+		{Role: "system", Content: systemPrompt},
 	}
 
-	m.convID = convID
-	slog.Info("[Memory] Conversation created",
-		"conv_id", convID,
-		"age_group", profile.AgeGroup,
-	)
-	return m, nil
+	slog.Info("[Memory] Conversation memory initialized", "age_group", profile.AgeGroup)
+	return m
 }
 
 // ===================== 核心方法 =====================
 
-// ConvID 返回当前有效的服务端对话 ID，供 llmGoroutine 调用 ConversationChatStream
-func (m *ConversationMemory) ConvID() string {
-	return m.convID
+// Messages 返回当前完整对话历史，供 llmGoroutine 调用 ChatHistoryStream
+func (m *ConversationMemory) Messages() []domain.Message {
+	return m.messages
 }
 
 // OnUserInput 在 ASR 返回文本后调用，记录本轮用户输入
@@ -116,6 +111,7 @@ func (m *ConversationMemory) ConvID() string {
 func (m *ConversationMemory) OnUserInput(text string) {
 	m.pendingUserText = text
 	m.currentAssistant.Reset()
+	m.messages = append(m.messages, domain.Message{Role: "user", Content: text})
 }
 
 // OnAssistantToken 每收到一个流式 token 调用一次，追加到当前轮次的 AI 回复
@@ -131,9 +127,13 @@ func (m *ConversationMemory) OnAssistantToken(token string) {
 // 参数：
 //   - ctx: 用于重建对话时调用 NewConversation
 func (m *ConversationMemory) OnTurnComplete(ctx context.Context) {
+	// assistant 回复追加到 messages
+	assistantText := m.currentAssistant.String()
+	m.messages = append(m.messages, domain.Message{Role: "assistant", Content: assistantText})
+
 	turn := Turn{
 		UserText:      m.pendingUserText,
-		AssistantText: m.currentAssistant.String(),
+		AssistantText: assistantText,
 	}
 	m.history = append(m.history, turn)
 	m.turnCount++
@@ -142,8 +142,7 @@ func (m *ConversationMemory) OnTurnComplete(ctx context.Context) {
 
 	slog.Debug("[Memory] Turn recorded",
 		"turn_count", m.turnCount,
-		"history_len", len(m.history),
-		"user_preview", preview(turn.UserText, 30),
+		"messages_len", len(m.messages),
 	)
 
 	// 达到重建阈值：压缩历史，重建新的服务端对话
@@ -163,23 +162,14 @@ func (m *ConversationMemory) rebuild(ctx context.Context) {
 	summary := buildHistorySummary(m.history)
 	newSystemPrompt := m.buildSystemPrompt(summary)
 
-	newConvID, err := m.llmProvider.NewConversation(ctx, newSystemPrompt)
-	if err != nil {
-		// 重建失败不致命：旧对话仍可用，只是 token 会越来越长
-		slog.Warn("[Memory] Conversation rebuild failed, keeping old conv_id",
-			"error", err,
-			"old_conv_id", m.convID,
-		)
-		return
+	m.messages = []domain.Message{
+		{Role: "system", Content: newSystemPrompt},
 	}
 
-	slog.Info("[Memory] Conversation rebuilt",
-		"old_conv_id", m.convID,
-		"new_conv_id", newConvID,
+	slog.Info("[Memory] Rebuilding conversation",
 		"summarized_turns", len(m.history),
 	)
 
-	m.convID = newConvID
 	// 清空已被摘要化的历史，从零开始积累新窗口
 	m.history = m.history[:0]
 }
@@ -286,6 +276,17 @@ func buildHistorySummary(history []Turn) string {
 		}
 	}
 	return sb.String()
+}
+
+// MessagesWithSilencePrompt 返回含静默引导 prompt 的临时 messages
+// 不修改 m.messages，因为静默触发不是真实用户输入
+func (m *ConversationMemory) MessagesWithSilencePrompt() []domain.Message {
+	prompt := m.BuildSilencePrompt()
+	// 复制一份，不污染原始 messages
+	tmp := make([]domain.Message, len(m.messages)+1)
+	copy(tmp, m.messages)
+	tmp[len(m.messages)] = domain.Message{Role: "user", Content: prompt}
+	return tmp
 }
 
 // preview 截取字符串前 n 个字符，超出时加省略号

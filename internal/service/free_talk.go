@@ -480,15 +480,7 @@ func (s *Session) llmGoroutine(
 ) {
 	profile := s.buildUserProfile()
 
-	memory, err := NewConversationMemory(s.ctx, s.llmProvider, profile)
-	if err != nil {
-		slog.Error("[FreeTalk-LLM] Init conversation memory failed",
-			"error", err,
-			"conversation_id", s.conversationID,
-		)
-		s.cancel()
-		return
-	}
+	memory := NewConversationMemory(s.ctx, s.llmProvider, profile)
 
 	// tokenChan 传递两种信号：
 	//   普通字符串 → token，追加进 builder
@@ -577,67 +569,42 @@ func (s *Session) llmGoroutine(
 				if !ok {
 					return
 				}
-
+				var messages []domain.Message
 				// 判断是否为静默触发的主动引导，而非用户真实输入
 				isSilenceTrigger := input == silenceTrigger
 
 				if isSilenceTrigger {
-					// 静默触发：不记录为用户输入，直接用记忆生成引导语
-					// 使用专门的引导 prompt，让 AI 基于已有上下文主动发起话题
-					input = memory.BuildSilencePrompt()
-					slog.Info("[FreeTalk-LLM] Silence trigger: injecting topic prompt",
-						"conv_id", memory.ConvID(),
-						"turn", memory.turnCount,
-					)
+					// 静默：用临时 messages，不修改 memory
+					messages = memory.MessagesWithSilencePrompt()
 				} else {
 					// 正常用户输入：记录到记忆
 					memory.OnUserInput(input)
 					s.turnCount++
+					messages = memory.Messages()
 				}
-
-				// ② 取最新 convID（可能已被 rebuild 更新）
-				convID := memory.ConvID()
-
-				stream := s.llmProvider.ConversationChatStream(s.ctx, convID, input)
+				slog.Debug("查看message:", "message", messages)
+				stream := s.llmProvider.ChatHistoryStream(s.ctx, messages)
 				firstToken := true
 				for stream.Next() {
-					event := stream.Current()
-					switch event.Type {
-
-					case "response.output_text.delta":
-						slog.Info("[FreeTalk-LLM] LLM delta", "delta", event.Delta)
-						if firstToken {
-							firstToken = false
-							select {
-							case ttsNewTurnChan <- struct{}{}: // 触发 TTS 建立连接
-							case <-s.ctx.Done():
-								return
-							}
+					chunk := stream.Current()
+					delta := chunk.Choices[0].Delta.Content
+					if firstToken {
+						firstToken = false
+						select {
+						case ttsNewTurnChan <- struct{}{}: // 触发 TTS 建立连接
+						case <-s.ctx.Done():
+							return
 						}
-						// ③ 追加 token 到记忆（用于生成摘要）
-						memory.OnAssistantToken(event.Delta)
-
-						// 发 token 给切分 goroutine
-						tokenChan <- event.Delta
-						// 同时转发给 App 显示实时字幕
-						msg := OutgoingMessage{Type: MsgTypeLLMToken, Text: event.Delta}
-						data, _ := json.Marshal(msg)
-						writeChan <- wsMessage{messageType: websocket.TextMessage, data: data}
-
-					case "response.output_text.done":
-						s.saveMessage(model.MessageRoleAssistant, memory.currentAssistant.String())
-						slog.Info("[FreeTalk-LLM] LLM done")
-						// 发__END__通知切分 goroutine：本轮结束，flush 并发 IsDone
-						tokenChan <- "__END__"
-
-						// 静默触发的回复：OnUserInput 没有调用，所以 pendingUserText 为空
-						// OnTurnComplete 会将空 UserText + AI回复 存入 history，这是合理
-
-						// ④ 本轮完整回复已收到，提交记忆并触发重建检查
-						// 注意：必须在 __END__ 之后调用，确保 currentAssistant 已完整
-						// 使用 background context 避免 session ctx 取消时中断重建
-						memory.OnTurnComplete(context.Background())
 					}
+					// ③ 追加 token 到记忆（用于生成摘要）
+					memory.OnAssistantToken(delta)
+
+					// 发 token 给切分 goroutine
+					tokenChan <- delta
+					// 同时转发给 App 显示实时字幕
+					msg := OutgoingMessage{Type: MsgTypeLLMToken, Text: delta}
+					data, _ := json.Marshal(msg)
+					writeChan <- wsMessage{messageType: websocket.TextMessage, data: data}
 				}
 
 				if stream.Err() != nil {
@@ -647,6 +614,18 @@ func (s *Session) llmGoroutine(
 					s.cancel()
 					return
 				}
+				s.saveMessage(model.MessageRoleAssistant, memory.currentAssistant.String())
+				slog.Info("[FreeTalk-LLM] LLM done")
+				// 发__END__通知切分 goroutine：本轮结束，flush 并发 IsDone
+				tokenChan <- "__END__"
+
+				// 静默触发的回复：OnUserInput 没有调用，所以 pendingUserText 为空
+				// OnTurnComplete 会将空 UserText + AI回复 存入 history，这是合理
+
+				// ④ 本轮完整回复已收到，提交记忆并触发重建检查
+				// 注意：必须在 __END__ 之后调用，确保 currentAssistant 已完整
+				// 使用 background context 避免 session ctx 取消时中断重建
+				memory.OnTurnComplete(context.Background())
 			}
 		}
 	}()
