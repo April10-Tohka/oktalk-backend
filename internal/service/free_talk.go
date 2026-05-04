@@ -640,6 +640,20 @@ func (s *Session) ttsGoroutine(llmOutputChan <-chan domain.LLMChunk, ttsNewTurnC
 		case <-s.ctx.Done():
 			return
 		case <-ttsNewTurnChan:
+			audioChan := s.ttsProvider.StreamTTS(s.ctx, llmOutputChan)
+			for audio := range audioChan {
+				writeChan <- wsMessage{
+					messageType: websocket.BinaryMessage,
+					data:        audio,
+				}
+			}
+			slog.Info("出现这个日志说明tts关闭了audiochan，即tts合成完毕")
+			// 通知 App：本轮 AI 音频全部发送完毕
+			turnEndMsg := OutgoingMessage{Type: MsgTypeTurnEnd}
+			turnEndData, _ := json.Marshal(turnEndMsg)
+			writeChan <- wsMessage{messageType: websocket.TextMessage, data: turnEndData}
+			continue
+
 			//  建立websocket连接。需要使用ttsProvider.ConnectTTS()方法。
 			ttsConn, err := s.ttsProvider.ConnectTTS(s.ctx)
 			if err != nil {

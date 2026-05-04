@@ -29,6 +29,8 @@ type TTSProvider interface {
 	// ConnectTTS 建立流式 TTS 长连接（用于 Free Talk 模式）
 	ConnectTTS(ctx context.Context) (*websocket.Conn, error)
 
+	StreamTTS(ctx context.Context, llmOutputChan <-chan LLMChunk) chan []byte
+
 	// Close 关闭客户端，释放资源
 	Close() error
 }
