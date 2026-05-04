@@ -12,6 +12,8 @@ func setupEvaluateRoutes(rg *gin.RouterGroup, h *handler.EvaluateHandler) {
 	eval := rg.Group("/evaluate")
 	{
 		// 同步发音评测
+		eval.POST("/submit/sync", h.SubmitEvaluationSync)
+		// 同步发音评测
 		eval.POST("/MVP", h.EvaluateMVP)
 		// 提交发音评测请求
 		eval.POST("/submit", h.SubmitEvaluation)

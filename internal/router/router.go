@@ -38,7 +38,9 @@ func Setup(cfg *config.Config, handlers *handler.Handlers, rdb *redis.Client) *g
 
 		// 系统状态路由（无需登录）
 		setupSystemRoutes(v1, handlers.System)
-		setupChatRoutes(v1, handlers.Chat) // AI 语音对话
+		setupChatRoutes(v1, handlers.Chat)         // AI 语音对话
+		setupEvaluateRoutes(v1, handlers.Evaluate) // AI 发音纠正
+
 		// ── 需要认证的路由 ──
 		authed := v1.Group("")
 		authed.Use(middleware.Auth(cfg, rdb))
@@ -47,7 +49,6 @@ func Setup(cfg *config.Config, handlers *handler.Handlers, rdb *redis.Client) *g
 			setupAuthProtectedRoutes(authed, handlers.Auth)
 			authed.POST("/chat/session/start", handlers.Chat.StartSession)
 			setupFreeTalkRoutes(authed, handlers.FreeTalk)           // Free Talk WebSocket
-			setupEvaluateRoutes(authed, handlers.Evaluate)           // AI 发音纠正
 			setupReportRoutes(authed, handlers.Report)               // 智能学习报告
 			setupUserRoutes(authed, handlers.User)                   // 用户信息
 			setupResourceRoutes(authed, handlers.System)             // 学习资源

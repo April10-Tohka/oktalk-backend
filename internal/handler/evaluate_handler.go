@@ -113,6 +113,57 @@ func (h *EvaluateHandler) EvaluateMVP(c *gin.Context) {
 	OK(c, resp)
 }
 
+func (h *EvaluateHandler) SubmitEvaluationSync(c *gin.Context) {
+	// 步骤 1：解析 multipart/form-data
+	type submitEvalForm struct {
+		AudioFile *multipart.FileHeader `form:"audio_file" binding:"required"`
+		Text      string                `form:"text" binding:"required"`
+		Category  string                `form:"category" binding:"required"`
+	}
+	var form submitEvalForm
+	if err := c.ShouldBind(&form); err != nil {
+		logger.ErrorContext(c.Request.Context(), "submit eval bind form failed", "error", err)
+		BadRequest(c, "invalid request body: "+err.Error())
+		return
+	}
+	// 步骤 4：读取音频数据
+	file, err := form.AudioFile.Open()
+	if err != nil {
+		logger.ErrorContext(c.Request.Context(), "submit eval open file failed", "error", err)
+		InternalError(c, "failed to read audio file")
+		return
+	}
+	defer file.Close()
+
+	audioData, err := io.ReadAll(file)
+	if err != nil {
+		logger.ErrorContext(c.Request.Context(), "submit eval read file failed", "error", err)
+		InternalError(c, "failed to read audio data")
+		return
+	}
+	// 步骤 6：调用 Service
+	resp, err := h.evaluateService.SubmitEvaluationSync(c.Request.Context(), &service.SubmitEvaluationSyncRequest{
+		AudioData: audioData,
+		Text:      strings.TrimSpace(form.Text),
+		Category:  "read_sentence",
+	})
+	if err != nil {
+		logger.ErrorContext(c.Request.Context(), "submit eval service failed", "error", err)
+		InternalError(c, err.Error())
+		return
+	}
+
+	// 步骤 7：返回成功响应
+	OK(c, gin.H{
+		"text":            form.Text,
+		"total_score":     resp.TotalScore,
+		"fluency_score":   resp.FluencyScore,
+		"accuracy_score":  resp.AccuracyScore,
+		"integrity_score": resp.IntegrityScore,
+		"standard_score":  resp.StandardScore,
+	})
+}
+
 // SubmitEvaluation POST /api/v1/evaluate/submit
 // 提交异步发音评测请求，返回 eval_id
 func (h *EvaluateHandler) SubmitEvaluation(c *gin.Context) {

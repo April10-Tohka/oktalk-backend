@@ -17,6 +17,7 @@ import (
 	"pronunciation-correction-system/internal/model"
 	"pronunciation-correction-system/internal/pkg/logger"
 	"pronunciation-correction-system/internal/pkg/uuid"
+	"pronunciation-correction-system/internal/pkg/wav"
 	"pronunciation-correction-system/internal/worker"
 )
 
@@ -30,6 +31,13 @@ type EvaluateMVPRequest struct {
 	Category        string // read_sentence / read_word
 	DifficultyLevel string // beginner / intermediate / advanced
 	UserID          string
+}
+
+// SubmitEvaluationSyncRequest 同步发音评测提交请求
+type SubmitEvaluationSyncRequest struct {
+	AudioData []byte
+	Text      string
+	Category  string //  read_sentence
 }
 
 // SubmitEvaluationRequest 异步发音评测提交请求
@@ -97,6 +105,14 @@ type WordDetail struct {
 	IsProblem bool    `json:"is_problem"` // 是否有问题
 }
 
+type EvaluationResultSyncResponse struct {
+	TotalScore     int64 `json:"total_score"`
+	AccuracyScore  int64 `json:"accuracy_score"`
+	FluencyScore   int64 `json:"fluency_score"`
+	IntegrityScore int64 `json:"integrity_score"`
+	StandardScore  int64 `json:"standard_score"`
+}
+
 // EvaluationResultResponse 发音评测完整结果
 type EvaluationResultResponse struct {
 	TaskID               string            `json:"task_id"`
@@ -156,6 +172,8 @@ type EvaluateService interface {
 	// EvaluateMVP 同步发音评测 MVP（讯飞评测 → LLM 分级反馈 → TTS 合成）
 	EvaluateMVP(ctx context.Context, req *EvaluateMVPRequest) (*EvaluateMVPResponse, error)
 
+	// SubmitEvaluationSync 同步提交发音评测任务
+	SubmitEvaluationSync(ctx context.Context, req *SubmitEvaluationSyncRequest) (*EvaluationResultSyncResponse, error)
 	// SubmitEvaluation 提交异步发音评测任务
 	SubmitEvaluation(ctx context.Context, req *SubmitEvaluationRequest) (evalID string, err error)
 
@@ -487,6 +505,26 @@ func buildPromptByLevel(level, targetText string, score float64, problemWords []
 // strPtr 字符串指针辅助
 func strPtr(s string) *string {
 	return &s
+}
+
+func (s *evaluateServiceImpl) SubmitEvaluationSync(ctx context.Context, req *SubmitEvaluationSyncRequest) (*EvaluationResultSyncResponse, error) {
+	// 科大讯飞语音评测接口要求wav格式的音频要转换为pcm格式
+	audioData, err := wav.StripToLinearPCM(req.AudioData)
+	if err != nil {
+		return nil, errHTTP(400, "音频格式无效：请使用 WAV，或 16kHz/16bit/mono 裸 PCM")
+	}
+	evalResult, err := s.evaluationProvider.Assess(ctx, req.Text, audioData, req.Category)
+	if err != nil {
+		s.logger.Error("pronunciation v2 assess failed", slog.String("error", err.Error()))
+		return nil, errHTTP(500, "评测服务异常")
+	}
+	return &EvaluationResultSyncResponse{
+		AccuracyScore:  int64(evalResult.AccuracyScore * 20),
+		FluencyScore:   int64(evalResult.FluencyScore * 20),
+		IntegrityScore: int64(evalResult.IntegrityScore * 20),
+		StandardScore:  int64(evalResult.TotalScore * 20),
+		TotalScore:     int64(evalResult.TotalScore * 20),
+	}, nil
 }
 
 func (s *evaluateServiceImpl) SubmitEvaluation(ctx context.Context, req *SubmitEvaluationRequest) (string, error) {
