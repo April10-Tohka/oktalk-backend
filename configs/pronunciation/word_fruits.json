@@ -8,17 +8,17 @@
     {
       "id": 1,
       "content": "apple",
-      "standard_audio_url": "https://oss.example.com/pronunciation/standard/apple.mp3"
+      "standard_audio_url": "https://oktalk.oss-cn-heyuan.aliyuncs.com/pronunciation/standard/apple.mp3"
     },
     {
       "id": 2,
       "content": "banana",
-      "standard_audio_url": "https://oss.example.com/pronunciation/standard/banana.mp3"
+      "standard_audio_url": "https://oktalk.oss-cn-heyuan.aliyuncs.com/pronunciation/standard/banana.mp3"
     },
     {
       "id": 3,
       "content": "orange",
-      "standard_audio_url": "https://oss.example.com/pronunciation/standard/orange.mp3"
+      "standard_audio_url": "https://oktalk.oss-cn-heyuan.aliyuncs.com/pronunciation/standard/orange.mp3"
     }
   ]
 }

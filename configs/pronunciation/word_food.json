@@ -8,17 +8,17 @@
     {
       "id": 1,
       "content": "pork",
-      "standard_audio_url": "https://oss.example.com/pronunciation/standard/pork.mp3"
+      "standard_audio_url": "https://oktalk.oss-cn-heyuan.aliyuncs.com/pronunciation/standard/pork.mp3"
     },
     {
       "id": 2,
       "content": "chicken",
-      "standard_audio_url": "https://oss.example.com/pronunciation/standard/chicken.mp3"
+      "standard_audio_url": "https://oktalk.oss-cn-heyuan.aliyuncs.com/pronunciation/standard/chicken.mp3"
     },
     {
       "id": 3,
       "content": "beef",
-      "standard_audio_url": "https://oss.example.com/pronunciation/standard/beef.mp3"
+      "standard_audio_url": "https://oktalk.oss-cn-heyuan.aliyuncs.com/pronunciation/standard/beef.mp3"
     }
   ]
 }
