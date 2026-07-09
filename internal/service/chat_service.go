@@ -197,6 +197,10 @@ type chatServiceImpl struct {
 	// pronunciationService / reportService 注入给 FreeTalk Session，供 Agent 工具使用（可为 nil）
 	pronunciationService *PronunciationService
 	reportService        ReportService
+	// evalProvider 注入给 FreeTalk Session，供 assess_pronunciation 异步交互工具使用（可为 nil）
+	evalProvider domain.EvaluationProvider
+	// profileStore 注入给 FreeTalk Session，供长期语义记忆工具使用（可为 nil → 退化为内存桩）
+	profileStore AgentProfileStore
 	taskCache            *cache.TaskCache
 	chatCache            *cache.ChatCache
 	workerManager        *worker.Manager
@@ -219,6 +223,8 @@ func NewChatService(
 	logger *slog.Logger,
 	pronService *PronunciationService,
 	reportService ReportService,
+	evalProvider domain.EvaluationProvider,
+	profileStore AgentProfileStore,
 ) ChatService {
 	var conversationRepo db.VoiceConversationRepository
 	var messageRepo db.ConversationMessageRepository
@@ -236,6 +242,8 @@ func NewChatService(
 		vadClient:            vadClient,
 		pronunciationService: pronService,
 		reportService:        reportService,
+		evalProvider:         evalProvider,
+		profileStore:         profileStore,
 		taskCache:            taskCache,
 		chatCache:            chatCache,
 		workerManager:        workerMgr,
@@ -784,6 +792,8 @@ func (s *chatServiceImpl) HandleFreetalk(ctx context.Context, req *HandleFreetal
 		s.vadClient,
 		s.pronunciationService,
 		s.reportService,
+		s.evalProvider,
+		s.profileStore,
 	)
 	go session.Run()
 	return nil

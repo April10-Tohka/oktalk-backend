@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"pronunciation-correction-system/internal/domain"
@@ -13,6 +14,7 @@ import (
 	"pronunciation-correction-system/internal/pkg/uuid"
 	agentpkg "pronunciation-correction-system/internal/agent"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -99,10 +101,28 @@ type Session struct {
 	// agent Agent 编排层（P0 透传 / P1 起支持 ReAct 多步工具循环）
 	agent *agentpkg.Agent
 
-	// pronunciationService 发音练习能力（list_pronunciation_units 工具依赖，可为 nil → 不注册该工具）
+	// pronunciationService 发音练习能力（list_pronunciation_units / start_pronunciation_practice 工具依赖，可为 nil → 不注册该工具）
 	pronunciationService *PronunciationService
 	// reportService 学习报告能力（get_learning_report 工具依赖，可为 nil → 不注册该工具）
 	reportService ReportService
+	// evalProvider 语音评测（assess_pronunciation 异步交互工具依赖，可为 nil → 不注册该工具）
+	evalProvider domain.EvaluationProvider
+	// profileStore 长期语义记忆存储（get_user_profile / update_user_profile 依赖，可为 nil → 退化为内存桩）
+	profileStore AgentProfileStore
+
+	// userProfile Agent 视角的用户画像（长期语义记忆的进程内镜像，跨会话由 profileStore 持久化）。
+	// 注意：conversation_memory 持有指向本字段的指针，update_user_profile 工具对它的修改会在下次 rebuild 反映到 System Prompt。
+	userProfile UserProfile
+
+	// ── 异步交互工具（练习/评测）控制权让渡状态 ──
+	// 当 LLM 调用 start_pronunciation_practice / assess_pronunciation 后，进入"等待孩子跟读音频"状态：
+	// 下一句 ASR 音频被截留、跑 EvaluationProvider.Assess，结果作为 observation 回灌 LLM，而非当作普通对话。
+	practiceMu         sync.Mutex
+	awaitingFollowRead bool   // 是否处于"等待跟读音频"状态
+	practiceTargetText string // 待跟读的目标文本（单词或整句）
+	practiceCategory   string // 评测类别：read_word / read_sentence
+	practiceSessionID  string // 发音练习会话 ID（来自 PronunciationService.StartSession）
+	practiceItemIndex  int    // 当前练习项序号
 
 	// VAD gRPC 客户端
 	vadClient vadpb.VADServiceClient
@@ -134,6 +154,8 @@ func NewSession(
 	vadClient vadpb.VADServiceClient,
 	pronService *PronunciationService,
 	reportService ReportService,
+	evalProvider domain.EvaluationProvider,
+	profileStore AgentProfileStore,
 ) *Session {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Session{
@@ -146,19 +168,70 @@ func NewSession(
 		vadClient:            vadClient,
 		pronunciationService: pronService,
 		reportService:        reportService,
+		evalProvider:         evalProvider,
+		profileStore:         profileStore,
 		ctx:                  ctx,
 		cancel:               cancel,
 	}
 }
 
-// buildUserProfile 从 Session 信息构建用户画像
-// P0 阶段返回默认值；P2 阶段可改为从 Redis 加载持久化画像
-func (s *Session) buildUserProfile() UserProfile {
-	return UserProfile{
-		// TODO P2: 从用户服务加载真实姓名和年龄
-		Name:     "",
-		AgeGroup: "6-12", // 默认全段，后续细化
+// buildUserProfile 从长期记忆存储加载用户画像（P2 长期语义记忆）。
+// 若存储不可用或无记录，返回带默认年龄段的空画像（保持 P0 行为，不阻断对话）。
+// 加载结果同时写入 s.userProfile，供本次会话内实时引用与 update_user_profile 增量更新。
+func (s *Session) buildUserProfile() *UserProfile {
+	def := UserProfile{Name: "", AgeGroup: "6-12"}
+	if s.profileStore == nil {
+		s.userProfile = def
+		return &s.userProfile
 	}
+	p, err := s.profileStore.Load(s.ctx, s.userID)
+	if err != nil || p == nil {
+		s.userProfile = def
+		return &s.userProfile
+	}
+	s.userProfile = *p
+	return &s.userProfile
+}
+
+// saveUserProfile 将当前 s.userProfile 持久化到长期记忆存储（忽略错误，避免中断对话）。
+func (s *Session) saveUserProfile() {
+	if s.profileStore == nil {
+		return
+	}
+	if err := s.profileStore.Save(s.ctx, s.userID, &s.userProfile); err != nil {
+		slog.Warn("[FreeTalk] save user profile failed", "error", err, "user_id", s.userID)
+	}
+}
+
+// armFollowRead 进入"等待孩子跟读音频"状态（异步交互工具控制权让渡）。
+// 由 start_pronunciation_practice / assess_pronunciation 工具在 LLM goroutine 内调用。
+func (s *Session) armFollowRead(targetText, category, sessionID string, itemIndex int) {
+	s.practiceMu.Lock()
+	defer s.practiceMu.Unlock()
+	s.awaitingFollowRead = true
+	s.practiceTargetText = targetText
+	s.practiceCategory = category
+	s.practiceSessionID = sessionID
+	s.practiceItemIndex = itemIndex
+}
+
+// consumeFollowRead 读取并清除"等待跟读"状态。返回是否处于等待态及目标信息。
+// 由 asrGoroutine 在截留音频评测后调用。
+func (s *Session) consumeFollowRead() (bool, string, string) {
+	s.practiceMu.Lock()
+	defer s.practiceMu.Unlock()
+	if !s.awaitingFollowRead {
+		return false, "", ""
+	}
+	s.awaitingFollowRead = false
+	return true, s.practiceTargetText, s.practiceCategory
+}
+
+// followReadTarget 读取当前"等待跟读"目标（不改状态），供 assess_pronunciation 工具判断是否已选好练习内容。
+func (s *Session) followReadTarget() (string, string, bool) {
+	s.practiceMu.Lock()
+	defer s.practiceMu.Unlock()
+	return s.practiceTargetText, s.practiceCategory, s.awaitingFollowRead
 }
 
 // saveMessage 写入单条消息到数据库
@@ -478,16 +551,74 @@ func (s *Session) asrGoroutine(audioChan <-chan []byte, llmInputChan chan<- stri
 				writeChan <- wsMessage{messageType: websocket.TextMessage, data: data}
 				continue
 			}
-			s.saveMessage(model.MessageRoleUser, result)
+		// 3.1 控制权让渡：若处于"等待跟读"状态，截留本句音频做发音评测，
+		//     把评测结果作为 observation 回灌 LLM（而非当作普通对话）。
+		if awaiting, target, category := s.consumeFollowRead(); awaiting {
+			s.handleFollowRead(llmInputChan, writeChan, result, audio, target, category)
+			continue
+		}
 
-			// 正常发送给 LLM
-			select {
-			case llmInputChan <- result:
-			case <-s.ctx.Done():
-				return
-			}
+		s.saveMessage(model.MessageRoleUser, result)
+
+		// 正常发送给 LLM
+		select {
+		case llmInputChan <- result:
+		case <-s.ctx.Done():
+			return
+		}
 		}
 	}
+}
+
+// handleFollowRead 处理"等待跟读"状态下的跟读音频：跑发音评测并组装增强 prompt 推给 LLM。
+// 评测服务不可用或评测失败时，退化为普通对话（已清除 awaiting），保证不被阻塞。
+func (s *Session) handleFollowRead(llmInputChan chan<- string, writeChan chan<- wsMessage, recognized string, audio []byte, target, category string) {
+	// 落库：用识别文本作为用户消息（评测上下文不进 DB，保持清洁）
+	s.saveMessage(model.MessageRoleUser, recognized)
+
+	if s.evalProvider == nil {
+		select {
+		case llmInputChan <- recognized:
+		case <-s.ctx.Done():
+		}
+		return
+	}
+	eval, err := s.evalProvider.Assess(s.ctx, target, audio, category)
+	if err != nil {
+		slog.Warn("[FreeTalk] follow-read assessment failed", "error", err, "user_id", s.userID)
+		select {
+		case llmInputChan <- recognized:
+		case <-s.ctx.Done():
+		}
+		return
+	}
+	// 把评测结果作为 observation 回灌 LLM，由其生成鼓励 + 示范纠正
+	select {
+	case llmInputChan <- buildFollowReadPrompt(target, recognized, eval):
+	case <-s.ctx.Done():
+	}
+}
+
+// buildFollowReadPrompt 把一次跟读评测结果组装成给 LLM 的 observation prompt。
+func buildFollowReadPrompt(target, recognized string, eval *domain.EvaluationResult) string {
+	var sb strings.Builder
+	sb.WriteString("【跟读评测】")
+	sb.WriteString(fmt.Sprintf("目标内容：\"%s\"；孩子识别文本：\"%s\"。", target, recognized))
+	if eval != nil {
+		sb.WriteString(fmt.Sprintf("评测结果：总分 %.1f/5（准确度 %.1f，流利度 %.1f，完整度 %.1f）。",
+			eval.TotalScore, eval.AccuracyScore, eval.FluencyScore, eval.IntegrityScore))
+		var weak []string
+		for _, w := range eval.Words {
+			if w.Word != "" && w.Word != "sil" && w.Score < 3 {
+				weak = append(weak, w.Word)
+			}
+		}
+		if len(weak) > 0 {
+			sb.WriteString("需注意的发音：" + strings.Join(weak, "、") + "。")
+		}
+	}
+	sb.WriteString("请基于以上结果，用一句简短鼓励 + 一个示范纠正（例如带读一遍正确发音），不要再次调用评测工具。")
+	return sb.String()
 }
 
 func (s *Session) llmGoroutine(

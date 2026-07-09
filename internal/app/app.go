@@ -341,6 +341,9 @@ func (a *App) initServices() {
 		repository.NewRedisCacheRepository(a.RedisClient),
 	)
 
+	// 长期语义记忆存储（Agent 画像，Redis 持久化；Redis 不可用时退化为内存）
+	profileStore := service.NewAgentProfileStore(a.RedisClient)
+
 	a.ChatService = service.NewChatService(
 		a.Repos,
 		a.ASRProvider,
@@ -355,6 +358,8 @@ func (a *App) initServices() {
 		appLogger,
 		pronSvc,
 		a.ReportService,
+		a.EvaluationProvider,
+		profileStore,
 	)
 	a.EvaluateService = service.NewEvaluateService(
 		a.Repos,

@@ -54,8 +54,10 @@ type ConversationMemory struct {
 	// llmProvider 用于重建对话时调用 NewConversation
 	llmProvider domain.LLMProvider
 
-	// userProfile 用户画像（名字、年龄等），用于组装 System Prompt
-	userProfile UserProfile
+	// userProfile 用户画像（名字、年龄等），用于组装 System Prompt。
+	// 使用指针：update_user_profile 工具在会话内修改 Session.userProfile 后，
+	// 下一次 rebuild（约每 5 轮）组装 System Prompt 时会读到最新值，实现长期记忆的"会话内生效"。
+	userProfile *UserProfile
 
 	// turnCount 已完成的总轮次数（含重建前的历史，用于日志）
 	turnCount int
@@ -81,10 +83,10 @@ type UserProfile struct {
 // 参数：
 //   - ctx: 请求上下文
 //   - llmProvider: LLM 接口，用于 NewConversation
-//   - profile: 用户画像
+//   - profile: 用户画像指针（通常指向 Session.userProfile，使更新即时生效）
 //
 // 返回已初始化的 ConversationMemory，首次 System Prompt 已注入
-func NewConversationMemory(ctx context.Context, llmProvider domain.LLMProvider, profile UserProfile) *ConversationMemory {
+func NewConversationMemory(ctx context.Context, llmProvider domain.LLMProvider, profile *UserProfile) *ConversationMemory {
 	m := &ConversationMemory{
 		llmProvider: llmProvider,
 		userProfile: profile,
@@ -202,6 +204,9 @@ func (m *ConversationMemory) BuildSilencePrompt() string {
 // summary 非空时将历史摘要嵌入，给新对话提供上下文延续感
 func (m *ConversationMemory) buildSystemPrompt(summary string) string {
 	p := m.userProfile
+	if p == nil {
+		p = &UserProfile{}
+	}
 	var sb strings.Builder
 
 	// ── 角色定义 ──
