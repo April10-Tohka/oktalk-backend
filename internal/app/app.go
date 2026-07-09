@@ -315,6 +315,32 @@ func (a *App) initServices() {
 	// 创建限流工厂
 	rlFactory := infraRL.NewSceneLimiterFactory(a.Config.RateLimit)
 
+	// ReportService / PronunciationService 需在 ChatService 之前创建：
+	// FreeTalk Session 会把它们注入 Agent 的工具注册表（P1 同步工具）。
+	a.ReportService = service.NewReportService(
+		a.Repos,
+		a.LLMProvider,
+		a.TTSProvider,
+		a.OSSProvider,
+		a.TaskCache,
+		a.ReportCache,
+		a.WorkerManager,
+		rlFactory,
+		a.PronunciationLoader,
+		appLogger,
+	)
+	pronSvc := service.NewPronunciationService(
+		a.PronunciationLoader,
+		repository.NewPronunciationSessionRepository(a.DB),
+		repository.NewPronunciationRecordRepository(a.DB),
+		a.EvaluationProvider,
+		a.LLMProvider,
+		a.TTSProvider,
+		a.OSSProvider,
+		appLogger,
+		repository.NewRedisCacheRepository(a.RedisClient),
+	)
+
 	a.ChatService = service.NewChatService(
 		a.Repos,
 		a.ASRProvider,
@@ -327,6 +353,8 @@ func (a *App) initServices() {
 		a.WorkerManager,
 		rlFactory,
 		appLogger,
+		pronSvc,
+		a.ReportService,
 	)
 	a.EvaluateService = service.NewEvaluateService(
 		a.Repos,
@@ -338,18 +366,6 @@ func (a *App) initServices() {
 		a.EvalCache,
 		a.WorkerManager,
 		rlFactory,
-		appLogger,
-	)
-	a.ReportService = service.NewReportService(
-		a.Repos,
-		a.LLMProvider,
-		a.TTSProvider,
-		a.OSSProvider,
-		a.TaskCache,
-		a.ReportCache,
-		a.WorkerManager,
-		rlFactory,
-		a.PronunciationLoader,
 		appLogger,
 	)
 

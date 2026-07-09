@@ -96,8 +96,13 @@ type Session struct {
 	llmProvider domain.LLMProvider
 	ttsProvider domain.TTSProvider
 
-	// agent Agent 编排层（P0：透传模式，注册表为空，等价于纯对话）
+	// agent Agent 编排层（P0 透传 / P1 起支持 ReAct 多步工具循环）
 	agent *agentpkg.Agent
+
+	// pronunciationService 发音练习能力（list_pronunciation_units 工具依赖，可为 nil → 不注册该工具）
+	pronunciationService *PronunciationService
+	// reportService 学习报告能力（get_learning_report 工具依赖，可为 nil → 不注册该工具）
+	reportService ReportService
 
 	// VAD gRPC 客户端
 	vadClient vadpb.VADServiceClient
@@ -127,18 +132,22 @@ func NewSession(
 	conversationID string,
 	userID string,
 	vadClient vadpb.VADServiceClient,
+	pronService *PronunciationService,
+	reportService ReportService,
 ) *Session {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Session{
-		appConn:        appConn,
-		asrProvider:    asrProvider,
-		llmProvider:    llmProvider,
-		ttsProvider:    ttsProvider,
-		conversationID: conversationID,
-		userID:         userID,
-		vadClient:      vadClient,
-		ctx:            ctx,
-		cancel:         cancel,
+		appConn:              appConn,
+		asrProvider:          asrProvider,
+		llmProvider:          llmProvider,
+		ttsProvider:          ttsProvider,
+		conversationID:       conversationID,
+		userID:               userID,
+		vadClient:            vadClient,
+		pronunciationService: pronService,
+		reportService:        reportService,
+		ctx:                  ctx,
+		cancel:               cancel,
 	}
 }
 
@@ -208,8 +217,9 @@ func (s *Session) Run() error {
 	go s.writerGoroutine(writeChan)
 	go s.vadSendGoroutine(vadStream, rawAudioChan)
 	go s.vadRecvGoroutine(vadStream, asrAudioChan, writeChan, speechStartChan)
-	// 创建 Agent 编排层（P0：透传模式，注册表为空，行为与改造前一致）
+	// 创建 Agent 编排层（P1：注册表含同步工具，支持 ReAct 多步循环）
 	registry := agentpkg.NewRegistry()
+	s.registerAgentTools(registry)
 	s.agent = agentpkg.NewAgent(s.llmProvider, registry)
 
 	go s.asrGoroutine(asrAudioChan, llmInputChan, writeChan)
@@ -591,7 +601,8 @@ func (s *Session) llmGoroutine(
 					messages = memory.Messages()
 				}
 				slog.Debug("查看message:", "message", messages)
-				// P0：委托 Agent 编排层产出本轮回复（当前为透传，无工具调用）
+				// P1：委托 Agent 编排层产出本轮回复。RunTurn 内部驱动 ReAct 多步循环
+				// （LLM 可发起同步工具调用查数据后再作答），对下游透明：只看到文本增量与一条终态。
 				stream := s.agent.RunTurn(s.ctx, messages)
 				firstToken := true
 				for stream.Next() {

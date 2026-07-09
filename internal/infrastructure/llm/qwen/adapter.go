@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"pronunciation-correction-system/internal/config"
 	"pronunciation-correction-system/internal/domain"
@@ -12,9 +13,11 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/conversations"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/packages/ssestream"
 	"github.com/openai/openai-go/v3/responses"
 	"github.com/openai/openai-go/v3/shared"
+	"github.com/openai/openai-go/v3/shared/constant"
 )
 
 // QwenAdapter 通义千问适配器
@@ -170,14 +173,51 @@ func (a *QwenAdapter) Close() error {
 func (a *QwenAdapter) ChatWithToolsStream(ctx context.Context, req domain.AgentRequest) *ssestream.Stream[domain.AgentStreamEvent] {
 	items := make([]responses.ResponseInputItemUnionParam, 0, len(req.Messages))
 	for _, m := range req.Messages {
-		items = append(items, responses.ResponseInputItemUnionParam{
-			OfMessage: &responses.EasyInputMessageParam{
-				Role: responses.EasyInputMessageRole(m.Role),
-				Content: responses.EasyInputMessageContentUnionParam{
-					OfString: openai.String(m.Content),
+		switch {
+		case m.Role == "assistant" && len(m.ToolCalls) > 0:
+			// assistant 发起的工具调用：转为 function_call 输入项，
+			// 使下一轮 LLM 能看到"我上一轮调了哪些工具、参数是什么"。
+			if strings.TrimSpace(m.Content) != "" {
+				items = append(items, responses.ResponseInputItemUnionParam{
+					OfMessage: &responses.EasyInputMessageParam{
+						Role: responses.EasyInputMessageRoleAssistant,
+						Content: responses.EasyInputMessageContentUnionParam{
+							OfString: openai.String(m.Content),
+						},
+					},
+				})
+			}
+			for _, tc := range m.ToolCalls {
+				items = append(items, responses.ResponseInputItemUnionParam{
+					OfFunctionCall: &responses.ResponseFunctionToolCallParam{
+						CallID:    tc.ID,
+						Name:      tc.Name,
+						Arguments: tc.Arguments,
+						Type:      constant.FunctionCall("function_call"),
+					},
+				})
+			}
+		case m.Role == "tool":
+			// 工具执行结果：转为 function_call_output 输入项，CallID 关联上面的调用
+			items = append(items, responses.ResponseInputItemUnionParam{
+				OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
+					CallID: m.ToolCallID,
+					Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
+						OfString: param.NewOpt(m.Content),
+					},
+					Type: constant.FunctionCallOutput("function_call_output"),
 				},
-			},
-		})
+			})
+		default:
+			items = append(items, responses.ResponseInputItemUnionParam{
+				OfMessage: &responses.EasyInputMessageParam{
+					Role: responses.EasyInputMessageRole(m.Role),
+					Content: responses.EasyInputMessageContentUnionParam{
+						OfString: openai.String(m.Content),
+					},
+				},
+			})
+		}
 	}
 
 	params := responses.ResponseNewParams{
@@ -294,8 +334,11 @@ func (d *agentStreamDecoder) Next() bool {
 		d.finished = true
 		return true
 	}
+	// 本轮为纯文本回复（无工具调用）：仍需发出 IsDone:true 终态事件，
+	// 否则上层的 reactLoopDecoder 无法判定单步结束，会 Infinite re-call LLM。
+	d.cur = ssestream.Event{Data: mustJSONAgent(domain.AgentStreamEvent{IsDone: true})}
 	d.finished = true
-	return false
+	return true
 }
 
 // mustJSONAgent 序列化 AgentStreamEvent；失败返回空对象，避免流式消费 panic。

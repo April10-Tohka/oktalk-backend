@@ -193,12 +193,15 @@ type chatServiceImpl struct {
 	ttsProvider      domain.TTSProvider
 	ossProvider      domain.OSSProvider
 	// vadClient VAD gRPC 客户端，由 NewChatService 注入；HandleFreetalk 透传给 Session
-	vadClient        vadpb.VADServiceClient
-	taskCache        *cache.TaskCache
-	chatCache        *cache.ChatCache
-	workerManager    *worker.Manager
-	rateLimitFactory domainLimiter.SceneLimiterFactory
-	logger           *slog.Logger
+	vadClient vadpb.VADServiceClient
+	// pronunciationService / reportService 注入给 FreeTalk Session，供 Agent 工具使用（可为 nil）
+	pronunciationService *PronunciationService
+	reportService        ReportService
+	taskCache            *cache.TaskCache
+	chatCache            *cache.ChatCache
+	workerManager        *worker.Manager
+	rateLimitFactory     domainLimiter.SceneLimiterFactory
+	logger               *slog.Logger
 }
 
 // NewChatService 创建 ChatService
@@ -214,6 +217,8 @@ func NewChatService(
 	workerMgr *worker.Manager,
 	rlFactory domainLimiter.SceneLimiterFactory,
 	logger *slog.Logger,
+	pronService *PronunciationService,
+	reportService ReportService,
 ) ChatService {
 	var conversationRepo db.VoiceConversationRepository
 	var messageRepo db.ConversationMessageRepository
@@ -222,18 +227,20 @@ func NewChatService(
 		messageRepo = repos.ConversationMessage
 	}
 	return &chatServiceImpl{
-		conversationRepo: conversationRepo,
-		messageRepo:      messageRepo,
-		asrProvider:      asr,
-		llmProvider:      llm,
-		ttsProvider:      tts,
-		ossProvider:      oss,
-		vadClient:        vadClient,
-		taskCache:        taskCache,
-		chatCache:        chatCache,
-		workerManager:    workerMgr,
-		rateLimitFactory: rlFactory,
-		logger:           logger,
+		conversationRepo:     conversationRepo,
+		messageRepo:          messageRepo,
+		asrProvider:          asr,
+		llmProvider:          llm,
+		ttsProvider:          tts,
+		ossProvider:          oss,
+		vadClient:            vadClient,
+		pronunciationService: pronService,
+		reportService:        reportService,
+		taskCache:            taskCache,
+		chatCache:            chatCache,
+		workerManager:        workerMgr,
+		rateLimitFactory:     rlFactory,
+		logger:               logger,
 	}
 }
 
@@ -775,6 +782,8 @@ func (s *chatServiceImpl) HandleFreetalk(ctx context.Context, req *HandleFreetal
 		req.ConversationID,
 		req.UserID,
 		s.vadClient,
+		s.pronunciationService,
+		s.reportService,
 	)
 	go session.Run()
 	return nil

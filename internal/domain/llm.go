@@ -11,8 +11,14 @@ import (
 )
 
 type Message struct {
-	Role    string // "system" | "user" | "assistant"
+	Role string // "system" | "user" | "assistant" | "tool"
+	// Content 文本内容（system/user/assistant/tool 通用）
 	Content string
+	// ToolCalls 当本消息是 assistant 且发起了工具调用时，记录本次调用列表
+	// 用于 ReAct 循环把"我调了哪些工具"回填给下一轮 LLM
+	ToolCalls []ToolCall
+	// ToolCallID 当 Role=="tool" 时，标记本结果是哪个工具调用（ToolCall.ID）的 observation
+	ToolCallID string
 }
 
 // LLMProvider 大语言模型服务提供者接口
