@@ -11,6 +11,7 @@ import (
 	"pronunciation-correction-system/internal/model"
 	"pronunciation-correction-system/internal/pkg/logger"
 	"pronunciation-correction-system/internal/pkg/uuid"
+	agentpkg "pronunciation-correction-system/internal/agent"
 	"strings"
 	"time"
 
@@ -94,6 +95,9 @@ type Session struct {
 	asrProvider domain.ASRProvider
 	llmProvider domain.LLMProvider
 	ttsProvider domain.TTSProvider
+
+	// agent Agent 编排层（P0：透传模式，注册表为空，等价于纯对话）
+	agent *agentpkg.Agent
 
 	// VAD gRPC 客户端
 	vadClient vadpb.VADServiceClient
@@ -204,6 +208,10 @@ func (s *Session) Run() error {
 	go s.writerGoroutine(writeChan)
 	go s.vadSendGoroutine(vadStream, rawAudioChan)
 	go s.vadRecvGoroutine(vadStream, asrAudioChan, writeChan, speechStartChan)
+	// 创建 Agent 编排层（P0：透传模式，注册表为空，行为与改造前一致）
+	registry := agentpkg.NewRegistry()
+	s.agent = agentpkg.NewAgent(s.llmProvider, registry)
+
 	go s.asrGoroutine(asrAudioChan, llmInputChan, writeChan)
 	go s.llmGoroutine(llmInputChan, llmOutputChan, ttsNewTurnChan, writeChan)
 	go s.ttsGoroutine(llmOutputChan, ttsNewTurnChan, writeChan)
@@ -583,11 +591,16 @@ func (s *Session) llmGoroutine(
 					messages = memory.Messages()
 				}
 				slog.Debug("查看message:", "message", messages)
-				stream := s.llmProvider.ChatHistoryStream(s.ctx, messages)
+				// P0：委托 Agent 编排层产出本轮回复（当前为透传，无工具调用）
+				stream := s.agent.RunTurn(s.ctx, messages)
 				firstToken := true
 				for stream.Next() {
-					chunk := stream.Current()
-					delta := chunk.Choices[0].Delta.Content
+					ev := stream.Current()
+					delta := ev.Text
+					if delta == "" {
+						// 终态/工具调用等无文本增量的事件跳过（句子切分由后续 __END__ 触发）
+						continue
+					}
 					if firstToken {
 						firstToken = false
 						select {

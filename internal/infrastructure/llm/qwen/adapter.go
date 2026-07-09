@@ -2,6 +2,7 @@ package qwen
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"pronunciation-correction-system/internal/config"
@@ -160,4 +161,149 @@ func (a *QwenAdapter) ChatHistoryStream(ctx context.Context, messages []domain.M
 // Close 关闭客户端，释放资源
 func (a *QwenAdapter) Close() error {
 	return a.qwenClient.close()
+}
+
+// ChatWithToolsStream 工具感知的流式对话（Agent 核心能力）
+// 在 Responses API 上挂载 Tools，流式解析文本增量与 function_call 事件，
+// 转换为领域层 domain.AgentStreamEvent 流。
+// 当 req.Tools 为空时，等价于纯文本流式对话（与 ChatHistoryStream 行为一致）。
+func (a *QwenAdapter) ChatWithToolsStream(ctx context.Context, req domain.AgentRequest) *ssestream.Stream[domain.AgentStreamEvent] {
+	items := make([]responses.ResponseInputItemUnionParam, 0, len(req.Messages))
+	for _, m := range req.Messages {
+		items = append(items, responses.ResponseInputItemUnionParam{
+			OfMessage: &responses.EasyInputMessageParam{
+				Role: responses.EasyInputMessageRole(m.Role),
+				Content: responses.EasyInputMessageContentUnionParam{
+					OfString: openai.String(m.Content),
+				},
+			},
+		})
+	}
+
+	params := responses.ResponseNewParams{
+		Model: a.model,
+		Input: responses.ResponseNewParamsInputUnion{
+			OfInputItemList: responses.ResponseInputParam(items),
+		},
+		Reasoning: shared.ReasoningParam{
+			Summary: "concise",
+			Effort:  shared.ReasoningEffortNone,
+		},
+	}
+
+	if len(req.Tools) > 0 {
+		tools := make([]responses.ToolUnionParam, 0, len(req.Tools))
+		for _, spec := range req.Tools {
+			var schema map[string]any
+			if spec.Parameters != "" {
+				// 参数 schema 解析失败时不阻塞对话，退化为空对象 schema
+				if err := json.Unmarshal([]byte(spec.Parameters), &schema); err != nil {
+					logger.Warn("[Qwen] invalid tool parameters schema, fallback to empty object",
+						"tool", spec.Name, "error", err)
+				}
+			}
+			if schema == nil {
+				schema = map[string]any{"type": "object", "properties": map[string]any{}}
+			}
+			tools = append(tools, responses.ToolParamOfFunction(spec.Name, schema, false))
+		}
+		params.Tools = tools
+	}
+
+	params.SetExtraFields(map[string]any{
+		"enable_thinking": false, // 关闭思考模式，降低延迟（语音对话敏感）
+	})
+
+	inner := a.client.Responses.NewStreaming(ctx, params)
+	return ssestream.NewStream[domain.AgentStreamEvent](
+		&agentStreamDecoder{inner: inner, toolCalls: make(map[string]*domain.ToolCall)},
+		nil,
+	)
+}
+
+// agentStreamDecoder 将 Responses API 的流式事件转换为 domain.AgentStreamEvent 流。
+// 它实现 ssestream.Decoder 接口，使 ChatWithToolsStream 能直接返回 *ssestream.Stream[domain.AgentStreamEvent]。
+// 转换策略：
+//   - response.output_text.delta → 立即产出一条文本增量事件
+//   - response.function_call_arguments.delta/done → 按 ItemID 累积参数，记录工具名
+//   - 流结束时 → 产出一条 IsDone=true 的终态事件，携带本次累积的全部 ToolCalls（一次性给全）
+type agentStreamDecoder struct {
+	inner     *ssestream.Stream[responses.ResponseStreamEventUnion]
+	toolCalls map[string]*domain.ToolCall
+	order     []string
+	cur       ssestream.Event
+	finished  bool
+	err       error
+}
+
+func (d *agentStreamDecoder) Event() ssestream.Event { return d.cur }
+func (d *agentStreamDecoder) Err() error             { return d.err }
+func (d *agentStreamDecoder) Close() error {
+	if d.inner != nil {
+		return d.inner.Close()
+	}
+	return nil
+}
+
+func (d *agentStreamDecoder) Next() bool {
+	if d.finished {
+		return false
+	}
+	for d.inner.Next() {
+		ev := d.inner.Current()
+		switch ev.Type {
+		case "response.output_text.delta":
+			delta := ev.AsResponseOutputTextDelta().Delta
+			if delta != "" {
+				d.cur = ssestream.Event{Data: mustJSONAgent(domain.AgentStreamEvent{Text: delta})}
+				return true
+			}
+		case "response.function_call_arguments.delta":
+			fc := ev.AsResponseFunctionCallArgumentsDelta()
+			tc := d.toolCalls[fc.ItemID]
+			if tc == nil {
+				tc = &domain.ToolCall{ID: fc.ItemID}
+				d.toolCalls[fc.ItemID] = tc
+				d.order = append(d.order, fc.ItemID)
+			}
+			tc.Arguments += fc.Delta
+		case "response.function_call_arguments.done":
+			fc := ev.AsResponseFunctionCallArgumentsDone()
+			tc := d.toolCalls[fc.ItemID]
+			if tc == nil {
+				tc = &domain.ToolCall{ID: fc.ItemID}
+				d.toolCalls[fc.ItemID] = tc
+				d.order = append(d.order, fc.ItemID)
+			}
+			tc.Name = fc.Name
+			tc.Arguments = fc.Arguments
+		}
+	}
+
+	// 内层流结束：把累积的工具调用作为终态事件一次性给出
+	if d.inner.Err() != nil {
+		d.err = d.inner.Err()
+		return false
+	}
+	if len(d.order) > 0 {
+		calls := make([]domain.ToolCall, 0, len(d.order))
+		for _, id := range d.order {
+			calls = append(calls, *d.toolCalls[id])
+		}
+		d.cur = ssestream.Event{Data: mustJSONAgent(domain.AgentStreamEvent{ToolCalls: calls, IsDone: true})}
+		d.finished = true
+		return true
+	}
+	d.finished = true
+	return false
+}
+
+// mustJSONAgent 序列化 AgentStreamEvent；失败返回空对象，避免流式消费 panic。
+func mustJSONAgent(v domain.AgentStreamEvent) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		logger.Warn("[Qwen] marshal AgentStreamEvent failed", "error", err)
+		return []byte("{}")
+	}
+	return b
 }

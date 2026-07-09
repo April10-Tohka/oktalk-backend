@@ -32,8 +32,49 @@ type LLMProvider interface {
 	ConversationChatStream(ctx context.Context, conversationID string, userMessage string) *ssestream.Stream[responses.ResponseStreamEventUnion]
 
 	ChatHistoryStream(ctx context.Context, messages []Message) *ssestream.Stream[openai.ChatCompletionChunk]
+
+	// ChatWithToolsStream 工具感知的流式对话（Agent 核心契约）
+	// 与 ChatHistoryStream 类似，但允许 LLM 在流式产出文本的同时发起工具调用。
+	// 返回的流中：文本增量以 AgentStreamEvent.Text 形式到达；
+	// 工具调用在终态事件（IsDone=true）中一并返回（通常一次性给全）。
+	// 若 req.Tools 为空，则等价于纯文本流式对话，行为与 ChatHistoryStream 一致。
+	ChatWithToolsStream(ctx context.Context, req AgentRequest) *ssestream.Stream[AgentStreamEvent]
+
 	// Close 关闭客户端，释放资源
 	Close() error
+}
+
+// ===================== Agent 工具调用契约（P0） =====================
+
+// ToolSpec 工具的描述信息，用于构建给 LLM 的 ToolSpec（让 LLM 知道何时该调哪个工具）。
+// Description 应写成"龙宝 OK 视角"的指令，便于模型决策。
+type ToolSpec struct {
+	Name        string // 工具名，如 "assess_pronunciation"
+	Description string // 给 LLM 的自然语言说明
+	Parameters  string // JSON Schema 字符串，描述参数结构（"type":"object" + "properties"）
+}
+
+// ToolCall LLM 产生的工具调用请求（Agent 解析后交给 Registry 执行）。
+type ToolCall struct {
+	ID        string `json:"id"`        // 工具调用唯一 id，回灌 observation 时使用
+	Name      string `json:"name"`      // 工具名
+	Arguments string `json:"arguments"` // JSON 字符串，工具参数
+}
+
+// AgentStreamEvent Agent 流式产出事件。
+// 一次 LLM 流式响应会被转换为一连串 AgentStreamEvent：
+//   - 文本增量：Text 非空、IsDone=false
+//   - 终态事件：IsDone=true，可能携带本步产生的 ToolCalls（一次性给全）
+type AgentStreamEvent struct {
+	Text      string     `json:"text"`       // 增量文本（可能为空）
+	IsDone    bool       `json:"is_done"`    // 本轮（含工具循环）是否结束
+	ToolCalls []ToolCall `json:"tool_calls"` // 本步产生的工具调用（非空即代表需要执行）
+}
+
+// AgentRequest 工具感知的对话请求。
+type AgentRequest struct {
+	Messages []Message  // 完整对话历史（含 system）
+	Tools    []ToolSpec // 当前开放给 LLM 的工具集合（空=纯对话）
 }
 
 // ChatMessage 对话消息（领域层定义，不依赖任何 SDK）
