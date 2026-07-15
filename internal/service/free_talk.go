@@ -124,6 +124,13 @@ type Session struct {
 	practiceSessionID  string // 发音练习会话 ID（来自 PronunciationService.StartSession）
 	practiceItemIndex  int    // 当前练习项序号
 
+	// ── 会话级目标（GoalState，P3 主动规划 / 多轮目标规划）──
+	// 把"被动接话"升级为"带目的的引导式教学"：LLM 通过 set_session_goal /
+	// update_goal_progress 工具维护本次会话的目标与进度；静默超时或每轮对话时，
+	// 目标上下文会被注入 LLM，驱动其主动推进（如"我们刚才没练完那个词，再来一次"）。
+	goalMu    sync.Mutex
+	goalState *GoalState
+
 	// VAD gRPC 客户端
 	vadClient vadpb.VADServiceClient
 
@@ -234,6 +241,88 @@ func (s *Session) followReadTarget() (string, string, bool) {
 	return s.practiceTargetText, s.practiceCategory, s.awaitingFollowRead
 }
 
+// ===================== 会话级目标（GoalState，P3） =====================
+//
+// 设计目标：把"被动接话"升级为"带目的的引导式教学"。
+// - 目标由 LLM 通过 set_session_goal / update_goal_progress 工具维护（多轮可见、可推进）；
+// - 每轮对话（含静默触发）都把目标上下文注入 LLM，使其能主动推进未完成目标；
+// - 静默超时时，若目标未完成，提示 LLM 主动发起下一步（如再练一次单词）。
+
+// GoalState 本次会话的目标与进度。
+type GoalState struct {
+	// Description 目标描述，如"带孩子练 3 个动物单词并完成一次评测"。
+	Description string `json:"description"`
+	// Status 目标状态：in_progress | done | abandoned。
+	Status string `json:"status"`
+	// TotalSteps 预计总步数（0=未预估）。
+	TotalSteps int `json:"total_steps"`
+	// DoneSteps 已完成步骤的描述列表。
+	DoneSteps []string `json:"done_steps"`
+}
+
+// setGoal 设定（或重置）本次会话目标。
+func (s *Session) setGoal(description string, totalSteps int) {
+	s.goalMu.Lock()
+	defer s.goalMu.Unlock()
+	s.goalState = &GoalState{
+		Description: description,
+		Status:      "in_progress",
+		TotalSteps:  totalSteps,
+		DoneSteps:   nil,
+	}
+}
+
+// updateGoalProgress 更新目标进度。
+//   - completedStep 非空时追加到 DoneSteps（记录刚完成的步骤）；
+//   - status 非空时（done/abandoned）覆盖目标状态。
+func (s *Session) updateGoalProgress(completedStep, status string) {
+	s.goalMu.Lock()
+	defer s.goalMu.Unlock()
+	if s.goalState == nil {
+		s.goalState = &GoalState{Status: "in_progress"}
+	}
+	if completedStep != "" {
+		s.goalState.DoneSteps = append(s.goalState.DoneSteps, completedStep)
+	}
+	if status != "" {
+		s.goalState.Status = status
+	}
+}
+
+// goalContextNote 生成注入 LLM 的"当前目标"上下文提示（[System: ...] 形式）。
+// 返回空串表示当前无目标（不该注入）。调用方负责把它作为一条 user-role 的
+// 内部指令追加到 messages（不污染持久化历史）。
+func (s *Session) goalContextNote() string {
+	s.goalMu.Lock()
+	g := s.goalState
+	s.goalMu.Unlock()
+	if g == nil || g.Description == "" {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("[System: CURRENT SESSION GOAL]\n")
+	sb.WriteString("Goal: " + g.Description + "\n")
+	sb.WriteString("Status: " + g.Status + "\n")
+	if len(g.DoneSteps) > 0 {
+		sb.WriteString("Steps already done: ")
+		for i, st := range g.DoneSteps {
+			if i > 0 {
+				sb.WriteString("; ")
+			}
+			sb.WriteString(st)
+		}
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("Steps already done: none yet.\n")
+	}
+	if g.Status == "done" {
+		sb.WriteString("The goal is already complete. Do not start new practice unless the child asks. Just keep chatting naturally.]")
+	} else {
+		sb.WriteString("The goal is NOT yet complete. If the child is silent or off-topic, proactively take the NEXT concrete step to advance the goal now (e.g. start the next practice item, or gently re-engage the child toward the goal). When you finish the goal, call update_goal_progress with status 'done'.]")
+	}
+	return sb.String()
+}
+
 // saveMessage 写入单条消息到数据库
 // 使用 context.Background() 确保 session ctx 取消后仍能完成写入
 // role 取值: user | assistant
@@ -293,6 +382,24 @@ func (s *Session) Run() error {
 	// 创建 Agent 编排层（P1：注册表含同步工具，支持 ReAct 多步循环）
 	registry := agentpkg.NewRegistry()
 	s.registerAgentTools(registry)
+
+	// P4 稳定性 / 儿童安全加固：
+	//  - SetToolTimeout：单次工具执行超时（避免慢/挂起的外部服务阻塞整个 ReAct 循环）
+	//  - SetBudget：整个 Session 的工具调用总预算（达上限强制本轮自然语言收尾，防失控）
+	//  - AllowTools：儿童安全白名单，只有名单内的工具名才允许执行（纵深防御）
+	registry.SetToolTimeout(15 * time.Second)
+	registry.SetBudget(50)
+	registry.AllowTools(
+		"list_pronunciation_units",
+		"get_user_profile",
+		"update_user_profile",
+		"get_learning_report",
+		"start_pronunciation_practice",
+		"assess_pronunciation",
+		"set_session_goal",
+		"update_goal_progress",
+	)
+
 	s.agent = agentpkg.NewAgent(s.llmProvider, registry)
 
 	go s.asrGoroutine(asrAudioChan, llmInputChan, writeChan)
@@ -718,19 +825,28 @@ func (s *Session) llmGoroutine(
 				if !ok {
 					return
 				}
-				var messages []domain.Message
-				// 判断是否为静默触发的主动引导，而非用户真实输入
-				isSilenceTrigger := input == silenceTrigger
+			var messages []domain.Message
+			// 判断是否为静默触发的主动引导，而非用户真实输入
+			isSilenceTrigger := input == silenceTrigger
 
-				if isSilenceTrigger {
-					// 静默：用临时 messages，不修改 memory
-					messages = memory.MessagesWithSilencePrompt()
-				} else {
-					// 正常用户输入：记录到记忆
-					memory.OnUserInput(input)
-					s.turnCount++
-					messages = memory.Messages()
-				}
+			if isSilenceTrigger {
+				// 静默：用临时 messages，不修改 memory
+				messages = memory.MessagesWithSilencePrompt()
+			} else {
+				// 正常用户输入：记录到记忆
+				memory.OnUserInput(input)
+				s.turnCount++
+				messages = memory.Messages()
+			}
+
+			// P3 多轮目标规划：每轮（含静默触发）注入当前会话目标上下文，
+			// 让 LLM 能看到目标并主动推进。复制切片避免污染 memory.Messages() 底层数组。
+			if note := s.goalContextNote(); note != "" {
+				cp := make([]domain.Message, len(messages)+1)
+				copy(cp, messages)
+				cp[len(messages)] = domain.Message{Role: "user", Content: note}
+				messages = cp
+			}
 				slog.Debug("查看message:", "message", messages)
 				// P1：委托 Agent 编排层产出本轮回复。RunTurn 内部驱动 ReAct 多步循环
 				// （LLM 可发起同步工具调用查数据后再作答），对下游透明：只看到文本增量与一条终态。

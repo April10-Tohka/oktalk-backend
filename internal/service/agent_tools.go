@@ -203,15 +203,20 @@ func (t *startPronunciationPracticeTool) Execute(ctx context.Context, args strin
 	if p.UnitID == "" {
 		return "缺少 unit_id，请先调用 list_pronunciation_units 获取单元 ID。", nil
 	}
-	// 依据单元类型决定评测类别
+	// 参数校验（P4 儿童安全/参数白名单）：unit_id 必须真实存在，避免 LLM 传入任意字符串。
 	category := "read_word"
+	valid := false
 	for _, u := range t.svc.GetUnitList(ctx, "") {
 		if u.ID == p.UnitID {
+			valid = true
 			if u.Type == "sentence" {
 				category = "read_sentence"
 			}
 			break
 		}
+	}
+	if !valid {
+		return "unit_id 不存在，请先调用 list_pronunciation_units 获取有效的单元 ID。", nil
 	}
 	resp, err := t.svc.StartSession(ctx, &PronunciationStartSessionRequest{UserID: t.session.userID, UnitID: p.UnitID})
 	if err != nil {
@@ -262,7 +267,71 @@ func (t *assessPronunciationTool) Execute(_ context.Context, _ string) (string, 
 	return "已准备好，请让孩子跟读，我会在下一句音频到达时自动评测并给出反馈。", nil
 }
 
-// registerAgentTools 按"依赖非空"原则，把 P1/P2 工具注册进 Agent 注册表。
+// ---------- 工具 7：set_session_goal（多轮目标规划） ----------
+
+type setGoalTool struct {
+	session *Session
+}
+
+func (t *setGoalTool) Spec() domain.ToolSpec {
+	return domain.ToolSpec{
+		Name: "set_session_goal",
+		Description: "为本次会话设定一个明确的教学目标（多轮目标规划）。" +
+			"例如\"带孩子练 3 个动物单词并完成一次评测\"。设定后，龙宝 OK 会围绕这个目标主动引导孩子，" +
+			"并在孩子走神/静默时主动推进。参数 description 目标描述；estimated_steps 可选，预计需要的步骤数。",
+		Parameters: `{"type":"object","properties":{"description":{"type":"string","description":"本次会话目标的自然语言描述"},"estimated_steps":{"type":"integer","description":"预计需要的步骤数，可省略"}}}`,
+	}
+}
+
+func (t *setGoalTool) Execute(_ context.Context, args string) (string, error) {
+	var p struct {
+		Description     string `json:"description"`
+		EstimatedSteps  int    `json:"estimated_steps"`
+	}
+	if err := json.Unmarshal([]byte(args), &p); err != nil {
+		return "参数解析失败，未设定目标。", nil
+	}
+	if p.Description == "" {
+		return "目标描述不能为空，请提供 description。", nil
+	}
+	t.session.setGoal(p.Description, p.EstimatedSteps)
+	return fmt.Sprintf("已设定本次会话目标：%s（状态：进行中）", p.Description), nil
+}
+
+// ---------- 工具 8：update_goal_progress（多轮目标规划） ----------
+
+type updateGoalTool struct {
+	session *Session
+}
+
+func (t *updateGoalTool) Spec() domain.ToolSpec {
+	return domain.ToolSpec{
+		Name: "update_goal_progress",
+		Description: "更新当前会话目标的进度。刚完成一步练习时，用 completed_step 记录这一步做了什么；" +
+			"目标全部达成时用 status='done' 标记完成，或放弃时用 status='abandoned'。" +
+			"这帮助龙宝 OK 在多轮对话中记住\"我们练到哪了\"，避免重复或遗漏。",
+		Parameters: `{"type":"object","properties":{"completed_step":{"type":"string","description":"刚完成的步骤描述，如'练了单词 apple'"},"status":{"type":"string","description":"目标状态：done 或 abandoned，可省略"}}}`,
+	}
+}
+
+func (t *updateGoalTool) Execute(_ context.Context, args string) (string, error) {
+	var p struct {
+		CompletedStep string `json:"completed_step"`
+		Status        string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(args), &p); err != nil {
+		return "参数解析失败，未更新进度。", nil
+	}
+	t.session.updateGoalProgress(p.CompletedStep, p.Status)
+	g := t.session.goalState
+	if g == nil {
+		return "已更新进度（当前无明确目标）。", nil
+	}
+	return fmt.Sprintf("目标进度已更新：%s | 已完成 %d 步 | 状态：%s",
+		g.Description, len(g.DoneSteps), g.Status), nil
+}
+
+// registerAgentTools 按"依赖非空"原则，把工具注册进 Agent 注册表。
 // 任何 service 为 nil 时跳过对应工具；注册表为空 → ReAct 循环退化为纯对话（与 P0 一致）。
 func (s *Session) registerAgentTools(registry *agentpkg.Registry) {
 	if s.pronunciationService != nil {
@@ -280,4 +349,7 @@ func (s *Session) registerAgentTools(registry *agentpkg.Registry) {
 	if s.reportService != nil {
 		registry.Register(&getLearningReportTool{svc: s.reportService, userID: s.userID})
 	}
+	// 多轮目标规划（P3）：目标管理工具始终注册，无外部依赖
+	registry.Register(&setGoalTool{session: s})
+	registry.Register(&updateGoalTool{session: s})
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"time"
 
 	"pronunciation-correction-system/internal/domain"
 
@@ -13,6 +14,12 @@ import (
 // maxSteps ReAct 循环的最大步数（防护：避免 LLM 无限调工具造成延迟/成本失控）。
 // 达到上限后，最后一步会强制以"纯文本"收尾，确保本轮一定给出自然语言回复。
 const maxSteps = 4
+
+// turnTimeout 单轮 LLM 调用的总超时（P4 打磨项）。
+// 包裹每次 ChatWithToolsStream 的 context，避免某个 LLM 步骤因网络/限流无限挂起，
+// 导致整轮对话卡死。超时后会由 decoder 的 Err() 路径安全结束本轮。
+// 设为较宽松值（2 分钟），覆盖"多步工具 + 儿童短回复"的最坏延迟。
+const turnTimeout = 2 * time.Minute
 
 // Agent 语音对话 Agent 编排层。
 //
@@ -70,6 +77,7 @@ type reactLoopDecoder struct {
 
 	step       int
 	stepStream *ssestream.Stream[domain.AgentStreamEvent]
+	stepCancel context.CancelFunc // 当前步 LLM 调用的超时 context 取消函数
 	cur        ssestream.Event
 	finished   bool
 	errored    bool
@@ -79,9 +87,21 @@ type reactLoopDecoder struct {
 func (d *reactLoopDecoder) Event() ssestream.Event { return d.cur }
 func (d *reactLoopDecoder) Err() error             { return d.err }
 
+// endStep 结束当前步：取消其超时 context 并清空步流，准备进入下一步或收尾。
+func (d *reactLoopDecoder) endStep() {
+	if d.stepCancel != nil {
+		d.stepCancel()
+		d.stepCancel = nil
+	}
+	d.stepStream = nil
+}
+
 func (d *reactLoopDecoder) Close() error {
 	if d.stepStream != nil {
-		return d.stepStream.Close()
+		_ = d.stepStream.Close()
+	}
+	if d.stepCancel != nil {
+		d.stepCancel()
 	}
 	return nil
 }
@@ -100,8 +120,11 @@ func (d *reactLoopDecoder) Next() bool {
 			if d.step >= maxSteps {
 				tools = nil
 			}
+			// 单轮 LLM 超时兜底（P4）：包裹 context，避免本轮无限挂起
+			stepCtx, stepCancel := context.WithTimeout(d.ctx, turnTimeout)
+			d.stepCancel = stepCancel
 			req := domain.AgentRequest{Messages: d.messages, Tools: tools}
-			d.stepStream = d.agent.llm.ChatWithToolsStream(d.ctx, req)
+			d.stepStream = d.agent.llm.ChatWithToolsStream(stepCtx, req)
 		}
 
 		// 2. 从本步流中读取下一个事件
@@ -112,7 +135,7 @@ func (d *reactLoopDecoder) Next() bool {
 				return false
 			}
 			// 本步流结束（理论不应发生，adapter 必发一条 IsDone 终态）
-			d.stepStream = nil
+			d.endStep()
 			continue
 		}
 
@@ -120,7 +143,7 @@ func (d *reactLoopDecoder) Next() bool {
 
 		// 3. 终态事件：判断是否还需要执行工具
 		if ev.IsDone {
-			d.stepStream = nil
+			d.endStep()
 			if len(ev.ToolCalls) == 0 {
 				// 无工具调用 → 本轮 ReAct 循环结束，发出干净终态
 				d.cur = ssestream.Event{Data: mustJSONAgent(domain.AgentStreamEvent{IsDone: true})}
